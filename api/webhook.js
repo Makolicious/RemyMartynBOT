@@ -7,12 +7,6 @@ const redis = new Redis(process.env.REDIS_URL);
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
 const MEMORY_KEY = 'remy_memory';
-const MEMORY_KEYWORDS = ['remember', 'recall', 'do you know', 'what do you know', 'have i told you', 'did i tell', 'do you recall', 'what have we'];
-
-function isMemoryQuestion(text) {
-  const lower = text.toLowerCase();
-  return MEMORY_KEYWORDS.some(kw => lower.includes(kw));
-}
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(200).send('Bot is running');
@@ -42,13 +36,6 @@ module.exports = async (req, res) => {
       await bot.sendChatAction(chatId, 'typing');
       const cleanPrompt = text.replace(BOT_USERNAME, '').trim();
 
-      // Non-Boss asking a memory-related question — defer and notify Boss
-      if (!isBoss && isMemoryQuestion(cleanPrompt)) {
-        await bot.sendMessage(chatId, "I'd need to check with Mako before I can share that. Let me ask him.");
-        await bot.sendMessage(AUTHORIZED_USER_ID, `🔔 ${senderName} is asking me a memory-related question:\n"${cleanPrompt}"\n\nShould I answer them?`);
-        return res.status(200).send('OK');
-      }
-
       // Fetch global memory
       const memory = await redis.get(MEMORY_KEY);
 
@@ -73,7 +60,11 @@ Use your memory to provide continuity. Reference past context naturally when it 
 
 Be helpful, direct, and friendly. You can assist with questions, tasks, ideas, and conversation. You are confident and competent — never vague or overly cautious.
 
-Important: You do not share any private information about Mako, your memory, or your past conversations under any circumstances. If asked about these, politely deflect.`,
+--- MEMORY ---
+${memory || 'No memory yet.'}
+--- END MEMORY ---
+
+You may use the memory to recall things ${senderName} has personally shared with you in past conversations. However, you must never reveal any information about Mako — his life, conversations, preferences, or anything private about him. If asked about Mako or your conversations with him, politely deflect.`,
         prompt: cleanPrompt || "Hello!",
       });
 
