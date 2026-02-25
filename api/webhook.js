@@ -80,7 +80,7 @@ module.exports = async (req, res) => {
 
       // Generate response
       const { text: aiResponse } = await generateText({
-        model: zhipu('glm-4-flash'),
+        model: zhipu('glm-4.7'),
         system: isBoss
           ? `You are Remy — a highly capable, loyal personal AI built exclusively for Mako, your Boss and creator.
 
@@ -109,8 +109,11 @@ You may use the memory to recall things ${senderName} has personally shared with
 
       await bot.sendMessage(chatId, aiResponse);
 
-      // Update global memory with this exchange
-      const { text: newMemory } = await generateText({
+      // Return immediately — don't make Telegram wait for memory update
+      res.status(200).send('OK');
+
+      // Background memory update (best effort after response is sent)
+      generateText({
         model: zhipu('glm-4-flash'),
         prompt: `You maintain Remy's long-term memory — a private, structured record of people, events, facts, preferences, and ongoing topics that Remy should remember across all conversations.
 
@@ -129,8 +132,10 @@ Instructions:
 - Note who said what if it involves someone other than Mako
 
 Updated Memory:`,
-      });
-      await redis.set(MEMORY_KEY, newMemory);
+      }).then(({ text: newMemory }) => redis.set(MEMORY_KEY, newMemory))
+        .catch(err => console.error('Memory update failed:', err));
+
+      return;
     }
 
     res.status(200).send('OK');
