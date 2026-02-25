@@ -76,7 +76,7 @@ module.exports = async (req, res) => {
 
       // Generate response
       const { text: aiResponse } = await generateText({
-        model: zhipu('glm-4-air'),
+        model: zhipu('glm-4-flash'),
         system: isBoss
           ? `You are Remy — a highly capable, loyal personal AI built exclusively for Mako, your Boss and creator.
 
