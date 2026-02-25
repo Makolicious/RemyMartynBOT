@@ -1,8 +1,7 @@
 {
   "name": "remymartynbot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Remy Martyn — personal Telegram AI assistant",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
