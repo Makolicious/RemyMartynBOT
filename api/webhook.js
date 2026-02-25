@@ -1,7 +1,8 @@
 const { zhipu } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 const TelegramBot = require('node-telegram-bot-api');
-const { kv } = require('@vercel/kv');
+const Redis = require('ioredis');
+const redis = new Redis(process.env.REDIS_URL);
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
@@ -33,7 +34,7 @@ module.exports = async (req, res) => {
       // 2. PRIVATE MEMORY LOGIC: Only fetch summary if the Boss is talking
       let currentSummary = "No context available.";
       if (isBoss) {
-        currentSummary = await kv.get(`summary_${chatId}`) || "This is your first deep conversation with the Boss.";
+        currentSummary = await redis.get(`summary_${chatId}`) || "This is your first deep conversation with the Boss.";
       }
 
       // 3. Generate Response
@@ -56,7 +57,7 @@ module.exports = async (req, res) => {
                    Newest Exchange: Mako said "${cleanPrompt}", you replied "${aiResponse}".
                    Keep the summary concise and focused on facts Mako would want you to remember.`,
         });
-        await kv.set(`summary_${chatId}`, newSummary);
+        await redis.set(`summary_${chatId}`, newSummary);
       }
     }
 
