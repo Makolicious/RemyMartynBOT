@@ -4,9 +4,11 @@ const TelegramBot = require('node-telegram-bot-api');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
+// Authorized IDs from Vercel Environment Variables
 const AUTHORIZED_USER_ID = Number(process.env.MY_TELEGRAM_ID);
-// Replace with your actual bot username
-const BOT_USERNAME = '@remy_martyn_bot'; 
+const FRIEND_USER_ID = Number(process.env.FRIEND_TELEGRAM_ID);
+
+const BOT_USERNAME = '@remy_martyn_bot';
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
@@ -16,31 +18,34 @@ module.exports = async (req, res) => {
   try {
     const { message } = req.body;
 
-    // 1. Verify it's YOU and the message has text
-    if (message && message.from && message.from.id === AUTHORIZED_USER_ID && message.text) {
-      
-      // 2. ONLY proceed if the bot is mentioned
+    if (message && message.from && message.text) {
+      const senderId = message.from.id;
+      const isAuthorized = senderId === AUTHORIZED_USER_ID || senderId === FRIEND_USER_ID;
+
+      // 1. Check if the bot was mentioned
       if (message.text.includes(BOT_USERNAME)) {
         const chatId = message.chat.id;
 
+        // 2. If mentioned but NOT authorized
+        if (!isAuthorized) {
+          await bot.sendMessage(chatId, "Sorry, I only talk to my creator and authorized friends.");
+          return res.status(200).send('OK');
+        }
+
+        // 3. If mentioned AND authorized, proceed to AI
         await bot.sendChatAction(chatId, 'typing');
 
-        // Clean the prompt by removing the @mention so the AI doesn't get confused
+        // Remove the @mention from the text so the AI doesn't get confused
         const cleanPrompt = message.text.replace(BOT_USERNAME, '').trim();
 
         const { text } = await generateText({
           model: zhipu('glm-4.7'),
           apiKey: process.env.ZHIPU_API_KEY,
-          prompt: cleanPrompt || "Hello!", // Fallback if it's just a mention
+          prompt: cleanPrompt || "Hello!", 
         });
 
         await bot.sendMessage(chatId, text);
       }
-      // If you messaged the bot but didn't mention it, the bot stays silent.
-      
-    } else if (message && message.text && message.text.includes(BOT_USERNAME)) {
-      // 3. If someone else mentions the bot, tell them no.
-      await bot.sendMessage(message.chat.id, "Sorry, I only talk to my creator.");
     }
 
     res.status(200).send('OK');
