@@ -4,8 +4,9 @@ const TelegramBot = require('node-telegram-bot-api');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
-// Best practice: Store your ID in Vercel Environment Variables as MY_TELEGRAM_ID
 const AUTHORIZED_USER_ID = Number(process.env.MY_TELEGRAM_ID);
+// Replace with your actual bot username
+const BOT_USERNAME = '@remy_martyn_bot'; 
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
@@ -15,23 +16,30 @@ module.exports = async (req, res) => {
   try {
     const { message } = req.body;
 
-    // Check if the message exists and if the sender is YOU
-    if (message && message.from && message.from.id === AUTHORIZED_USER_ID) {
-      if (message.text) {
+    // 1. Verify it's YOU and the message has text
+    if (message && message.from && message.from.id === AUTHORIZED_USER_ID && message.text) {
+      
+      // 2. ONLY proceed if the bot is mentioned
+      if (message.text.includes(BOT_USERNAME)) {
         const chatId = message.chat.id;
 
         await bot.sendChatAction(chatId, 'typing');
 
+        // Clean the prompt by removing the @mention so the AI doesn't get confused
+        const cleanPrompt = message.text.replace(BOT_USERNAME, '').trim();
+
         const { text } = await generateText({
           model: zhipu('glm-4.7'),
           apiKey: process.env.ZHIPU_API_KEY,
-          prompt: message.text,
+          prompt: cleanPrompt || "Hello!", // Fallback if it's just a mention
         });
 
         await bot.sendMessage(chatId, text);
       }
-    } else if (message) {
-      // Optional: Tell unauthorized users to go away
+      // If you messaged the bot but didn't mention it, the bot stays silent.
+      
+    } else if (message && message.text && message.text.includes(BOT_USERNAME)) {
+      // 3. If someone else mentions the bot, tell them no.
       await bot.sendMessage(message.chat.id, "Sorry, I only talk to my creator.");
     }
 
