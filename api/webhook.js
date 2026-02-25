@@ -19,42 +19,46 @@ module.exports = async (req, res) => {
     const chatId = message.chat.id;
     const text = message.text;
 
-    // 1. Check Permissions & Ignore List
-    const isAuthorized = senderId === AUTHORIZED_USER_ID || senderId === Number(process.env.FRIEND_TELEGRAM_ID);
+    // 1. Permission Check
+    const isBoss = senderId === AUTHORIZED_USER_ID;
     const isIgnored = await kv.get(`ignore_id_${senderId}`);
-    if (isIgnored || (!isAuthorized && text.includes(BOT_USERNAME))) {
-      if (!isIgnored && text.includes(BOT_USERNAME)) await bot.sendMessage(chatId, "Access denied.");
-      return res.status(200).send('OK');
-    }
+    
+    if (isIgnored) return res.status(200).send('OK');
 
     if (message.chat.type === 'private' || text.includes(BOT_USERNAME)) {
       await bot.sendChatAction(chatId, 'typing');
+      const cleanPrompt = text.replace(BOT_USERNAME, '').trim();
 
-      // 2. Fetch the "Running Summary"
-      const currentSummary = await kv.get(`summary_${chatId}`) || "No previous context.";
+      // 2. PRIVATE MEMORY LOGIC: Only fetch summary if the Boss is talking
+      let currentSummary = "No context available.";
+      if (isBoss) {
+        currentSummary = await kv.get(`summary_${chatId}`) || "This is your first deep conversation with the Boss.";
+      }
 
-      // 3. Generate the Response
+      // 3. Generate Response
       const { text: aiResponse } = await generateText({
         model: zhipu('glm-4.7'),
         apiKey: process.env.ZHIPU_API_KEY,
-        system: `Your name is Remy. Mako is the Boss. 
-                 Current context of your relationship/conversation: ${currentSummary}`,
-        prompt: text.replace(BOT_USERNAME, '').trim(),
+        system: isBoss 
+          ? `Your name is Remy. Mako is the Boss. Use this private summary for context: ${currentSummary}`
+          : `Your name is Remy. You are a professional AI assistant. You are talking to a guest, not the Boss. Do not mention any private details about Mako or your past conversations with him.`,
+        prompt: cleanPrompt || "Hello!",
       });
 
       await bot.sendMessage(chatId, aiResponse);
 
-      // 4. Update the Summary (Background task)
-      const { text: newSummary } = await generateText({
-        model: zhipu('glm-4.7'),
-        apiKey: process.env.ZHIPU_API_KEY,
-        prompt: `Condense the following into a short, permanent memory summary for an AI:
-                 Old Summary: ${currentSummary}
-                 New Exchange: User said "${text}", Remy replied "${aiResponse}".
-                 Keep it under 200 words but retain key facts and the "Boss" relationship.`,
-      });
-
-      await kv.set(`summary_${chatId}`, newSummary);
+      // 4. UPDATE MEMORY: Only if the Boss is talking
+      if (isBoss) {
+        const { text: newSummary } = await generateText({
+          model: zhipu('glm-4.7'),
+          apiKey: process.env.ZHIPU_API_KEY,
+          prompt: `Update the private memory summary. 
+                   Old Summary: ${currentSummary}
+                   Newest Exchange: Mako said "${cleanPrompt}", you replied "${aiResponse}".
+                   Keep the summary concise and focused on facts Mako would want you to remember.`,
+        });
+        await kv.set(`summary_${chatId}`, newSummary);
+      }
     }
 
     res.status(200).send('OK');
