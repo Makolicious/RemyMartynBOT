@@ -1,0 +1,18 @@
+{
+  "name": "remymartynbot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ai": "^6.0.99",
+    "node-telegram-bot-api": "^0.63.0",
+    "zhipu-ai-provider": "^0.2.2"
+  }
+}
