@@ -124,20 +124,22 @@ module.exports = async (req, res) => {
     if (isBoss && isPrivate) {
 
       if (text.startsWith('/allow ')) {
-        const id = text.slice(7).trim();
+        const id = text.slice(7).trim().replace(/[<>]/g, '');
         await redis.sadd(APPROVED_KEY, id);
         await bot.sendMessage(chatId, `✅ User \`${id}\` can now talk to me in groups.`, { parse_mode: 'Markdown' });
         return res.status(200).send('OK');
       }
 
-      if (text.startsWith('/remove ')) {
-        const id = text.slice(8).trim();
+      // /remove and /revoke are aliases
+      if (text.startsWith('/remove ') || text.startsWith('/revoke ')) {
+        const id = text.split(' ').slice(1).join(' ').trim().replace(/[<>]/g, '');
         await redis.srem(APPROVED_KEY, id);
         await bot.sendMessage(chatId, `🚫 User \`${id}\` access revoked.`, { parse_mode: 'Markdown' });
         return res.status(200).send('OK');
       }
 
-      if (text === '/status') {
+      // /status and /list are aliases
+      if (text === '/status' || text === '/list') {
         const [users, groupKeys] = await Promise.all([
           redis.smembers(APPROVED_KEY),
           redis.keys(`${BOSS_GRP_PREFIX}*`)
@@ -233,8 +235,8 @@ Rules:
           `*Remy commands:*\n\n` +
           `*Access management*\n` +
           `\`/allow <id>\` — grant group access\n` +
-          `\`/remove <id>\` — revoke access\n` +
-          `\`/status\` — approved users & active groups\n\n` +
+          `\`/remove <id>\` or \`/revoke <id>\` — revoke access\n` +
+          `\`/status\` or \`/list\` — approved users & active groups\n\n` +
           `*Memory*\n` +
           `\`/memory\` — view full structured memory\n` +
           `\`/clearmemory\` — wipe memory\n` +
@@ -245,6 +247,12 @@ Rules:
           `\`/clearlog\` — wipe raw log`,
           { parse_mode: 'Markdown' }
         );
+        return res.status(200).send('OK');
+      }
+
+      // Catch any other unrecognised slash command — don't pass to AI
+      if (text.startsWith('/')) {
+        await bot.sendMessage(chatId, `❓ Unknown command. Type /help to see all available commands.`);
         return res.status(200).send('OK');
       }
     }
