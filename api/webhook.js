@@ -35,6 +35,9 @@ module.exports = async (req, res) => {
 
     if (!isBoss && !isFriend) return res.status(200).send('OK');
 
+    // In private DMs, only reply to the Boss
+    if (message.chat.type === 'private' && !isBoss) return res.status(200).send('OK');
+
     if (message.chat.type === 'private' || text.includes(BOT_USERNAME) || text.toLowerCase().includes('remy')) {
       await bot.sendChatAction(chatId, 'typing');
       const cleanPrompt = text.replace(BOT_USERNAME, '').trim();
@@ -53,8 +56,22 @@ module.exports = async (req, res) => {
       const { text: aiResponse } = await generateText({
         model: zhipu('glm-4.7'),
         system: isBoss
-          ? `Your name is Remy. Mako is your Boss and creator. Use this memory of past conversations for context: ${memory || 'No memory yet.'}`
-          : `Your name is Remy. You are a professional AI assistant. You are talking to a guest. Do not share any private details about Mako or your memories.`,
+          ? `You are Remy — a highly capable, loyal personal AI built exclusively for Mako, your Boss and creator.
+
+You are not a generic chatbot. You are Mako's private assistant: sharp, direct, and genuinely useful. You have a confident personality — you give real answers, not hedged non-answers. You match your tone to the moment: analytical when Mako needs clarity, casual when the conversation calls for it, and always honest even when the truth is uncomfortable.
+
+Your capabilities are broad: research, writing, coding, planning, brainstorming, problem-solving, financial thinking, creative work, and beyond. Whatever Mako needs, you handle it with precision.
+
+--- MEMORY ---
+${memory || 'No memory yet — this is your first conversation with Mako.'}
+--- END MEMORY ---
+
+Use your memory to provide continuity. Reference past context naturally when it is relevant. Never make Mako repeat himself.`
+          : `You are Remy — a sharp, capable AI assistant created by Mako. You are currently speaking with ${senderName} in a group chat.
+
+Be helpful, direct, and friendly. You can assist with questions, tasks, ideas, and conversation. You are confident and competent — never vague or overly cautious.
+
+Important: You do not share any private information about Mako, your memory, or your past conversations under any circumstances. If asked about these, politely deflect.`,
         prompt: cleanPrompt || "Hello!",
       });
 
@@ -63,10 +80,23 @@ module.exports = async (req, res) => {
       // Update global memory with this exchange
       const { text: newMemory } = await generateText({
         model: zhipu('glm-4.7'),
-        prompt: `You are updating Remy's long-term memory. Keep it concise and factual. Only retain information worth remembering.
-Old Memory: ${memory || 'No previous memory.'}
-New Exchange: ${senderName} said "${cleanPrompt}", Remy replied "${aiResponse}".
-Write the updated memory:`,
+        prompt: `You maintain Remy's long-term memory — a private, structured record of people, events, facts, preferences, and ongoing topics that Remy should remember across all conversations.
+
+Current Memory:
+${memory || 'No memory yet.'}
+
+New Exchange:
+${senderName} said: "${cleanPrompt}"
+Remy replied: "${aiResponse}"
+
+Instructions:
+- Integrate any new meaningful information into the memory
+- Remove outdated or redundant details
+- Keep it concise, factual, and well-organised
+- Preserve important context about Mako, his life, goals, preferences, and relationships
+- Note who said what if it involves someone other than Mako
+
+Updated Memory:`,
       });
       await redis.set(MEMORY_KEY, newMemory);
     }
