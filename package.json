@@ -12,7 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "ioredis": "^5.3.2",
-    "ai": "^6.0.99",
+    "ai": "^5.0.0",
     "node-telegram-bot-api": "^0.63.0",
     "zhipu-ai-provider": "^0.2.2"
   }

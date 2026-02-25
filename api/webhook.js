@@ -54,7 +54,7 @@ module.exports = async (req, res) => {
 
       // Generate response
       const { text: aiResponse } = await generateText({
-        model: zhipu('glm-4.7'),
+        model: zhipu('glm-4-air'),
         system: isBoss
           ? `You are Remy — a highly capable, loyal personal AI built exclusively for Mako, your Boss and creator.
 
@@ -81,7 +81,7 @@ Important: You do not share any private information about Mako, your memory, or 
 
       // Update global memory with this exchange
       const { text: newMemory } = await generateText({
-        model: zhipu('glm-4.7'),
+        model: zhipu('glm-4-flash'),
         prompt: `You maintain Remy's long-term memory — a private, structured record of people, events, facts, preferences, and ongoing topics that Remy should remember across all conversations.
 
 Current Memory:
