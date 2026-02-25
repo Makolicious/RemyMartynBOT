@@ -9,6 +9,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(200).send('Bot is running');
 
   const AUTHORIZED_USER_ID = Number(process.env.MY_TELEGRAM_ID);
+  const FRIEND_USER_ID = Number(process.env.FRIEND_TELEGRAM_ID);
   const BOT_USERNAME = '@remy_martyn_bot';
 
   try {
@@ -19,11 +20,11 @@ module.exports = async (req, res) => {
     const chatId = message.chat.id;
     const text = message.text;
 
-    // 1. Permission Check
+    // 1. Permission Check — allowlist only
     const isBoss = senderId === AUTHORIZED_USER_ID;
-    const isIgnored = await kv.get(`ignore_id_${senderId}`);
-    
-    if (isIgnored) return res.status(200).send('OK');
+    const isFriend = senderId === FRIEND_USER_ID;
+
+    if (!isBoss && !isFriend) return res.status(200).send('OK');
 
     if (message.chat.type === 'private' || text.includes(BOT_USERNAME)) {
       await bot.sendChatAction(chatId, 'typing');
@@ -38,8 +39,7 @@ module.exports = async (req, res) => {
       // 3. Generate Response
       const { text: aiResponse } = await generateText({
         model: zhipu('glm-4.7'),
-        apiKey: process.env.ZHIPU_API_KEY,
-        system: isBoss 
+        system: isBoss
           ? `Your name is Remy. Mako is the Boss. Use this private summary for context: ${currentSummary}`
           : `Your name is Remy. You are a professional AI assistant. You are talking to a guest, not the Boss. Do not mention any private details about Mako or your past conversations with him.`,
         prompt: cleanPrompt || "Hello!",
@@ -51,8 +51,7 @@ module.exports = async (req, res) => {
       if (isBoss) {
         const { text: newSummary } = await generateText({
           model: zhipu('glm-4.7'),
-          apiKey: process.env.ZHIPU_API_KEY,
-          prompt: `Update the private memory summary. 
+          prompt: `Update the private memory summary.
                    Old Summary: ${currentSummary}
                    Newest Exchange: Mako said "${cleanPrompt}", you replied "${aiResponse}".
                    Keep the summary concise and focused on facts Mako would want you to remember.`,
