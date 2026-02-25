@@ -7,12 +7,13 @@ const redis = new Redis(process.env.REDIS_URL);
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
 const MEMORY_KEY = 'remy_memory';
+const APPROVED_USERS_KEY = 'approved_users';
+const BOSS_GROUP_PREFIX = 'boss_group_';
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(200).send('Bot is running');
 
   const AUTHORIZED_USER_ID = Number(process.env.MY_TELEGRAM_ID);
-  const FRIEND_USER_ID = Number(process.env.FRIEND_TELEGRAM_ID);
   const BOT_USERNAME = '@remy_martyn_bot';
 
   try {
@@ -23,16 +24,50 @@ module.exports = async (req, res) => {
     const chatId = message.chat.id;
     const text = message.text;
     const senderName = message.from?.first_name || 'Someone';
-
+    const isPrivate = message.chat.type === 'private';
     const isBoss = senderId === AUTHORIZED_USER_ID;
-    const isFriend = senderId === FRIEND_USER_ID;
 
-    if (!isBoss && !isFriend) return res.status(200).send('OK');
+    // Only Boss can DM Remy
+    if (isPrivate && !isBoss) return res.status(200).send('OK');
 
-    // In private DMs, only reply to the Boss
-    if (message.chat.type === 'private' && !isBoss) return res.status(200).send('OK');
+    // In groups: check if sender is Boss or an approved user in a Boss-active group
+    if (!isPrivate && !isBoss) {
+      const isApproved = await redis.sismember(APPROVED_USERS_KEY, String(senderId));
+      if (!isApproved) return res.status(200).send('OK');
 
-    if (message.chat.type === 'private' || text.includes(BOT_USERNAME) || text.toLowerCase().includes('remy')) {
+      const bossActive = await redis.get(`${BOSS_GROUP_PREFIX}${chatId}`);
+      if (!bossActive) return res.status(200).send('OK');
+    }
+
+    // Boss management commands (DM only)
+    if (isBoss && isPrivate) {
+      if (text.startsWith('/allow ')) {
+        const targetId = text.replace('/allow ', '').trim();
+        await redis.sadd(APPROVED_USERS_KEY, targetId);
+        await bot.sendMessage(chatId, `✅ User ${targetId} can now talk to me in groups.`);
+        return res.status(200).send('OK');
+      }
+      if (text.startsWith('/remove ')) {
+        const targetId = text.replace('/remove ', '').trim();
+        await redis.srem(APPROVED_USERS_KEY, targetId);
+        await bot.sendMessage(chatId, `🚫 User ${targetId}'s access has been revoked.`);
+        return res.status(200).send('OK');
+      }
+      if (text === '/users') {
+        const users = await redis.smembers(APPROVED_USERS_KEY);
+        const list = users.length > 0 ? users.join('\n') : 'No approved users yet.';
+        await bot.sendMessage(chatId, `👥 Approved users:\n${list}`);
+        return res.status(200).send('OK');
+      }
+    }
+
+    // Track Boss presence in groups (even if Remy isn't mentioned)
+    if (isBoss && !isPrivate) {
+      await redis.set(`${BOSS_GROUP_PREFIX}${chatId}`, '1');
+    }
+
+    // Only respond when mentioned or in private with Boss
+    if (isPrivate || text.includes(BOT_USERNAME) || text.toLowerCase().includes('remy')) {
       await bot.sendChatAction(chatId, 'typing');
       const cleanPrompt = text.replace(BOT_USERNAME, '').trim();
 
