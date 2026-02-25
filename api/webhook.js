@@ -2,7 +2,11 @@ const { zhipu } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
-const redis = new Redis(process.env.REDIS_URL);
+const redis = new Redis(process.env.REDIS_URL, {
+  connectTimeout: 5000,
+  commandTimeout: 5000,
+  maxRetriesPerRequest: 1,
+});
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
