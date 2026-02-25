@@ -2,7 +2,7 @@ const { zhipu } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 const TelegramBot = require('node-telegram-bot-api');
 
-const bot = new TelegramBot(process.env.5444040664);
+const bot = new TelegramBot(process.env['5444040664']);
 
 // Initialize the bot with your token from environment variables
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
