@@ -3,11 +3,19 @@ const { generateText } = require('ai');
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 
+// ── Validate required env vars on cold start ─────────────────────────────────
+const REQUIRED_ENV = ['TELEGRAM_TOKEN', 'MY_TELEGRAM_ID', 'REDIS_URL'];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length) {
+  throw new Error(`Missing required env vars: ${missing.join(', ')}`);
+}
+
 const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
   commandTimeout: 5000,
   maxRetriesPerRequest: 1,
 });
+redis.on('error', (err) => console.error('Redis error:', err.message));
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 
@@ -16,8 +24,11 @@ const RAW_LOG_KEY     = 'remy_raw_log';
 const APPROVED_KEY    = 'approved_users';
 const BOSS_GRP_PREFIX = 'boss_group_';
 const HIST_PREFIX     = 'history_';
+const DEDUP_PREFIX    = 'dedup_';
 const MAX_HIST_MSGS   = 12;
-const MAX_LOG_ENTRIES = 500;
+const MAX_LOG_ENTRIES  = 500;
+const DEDUP_TTL       = 60; // seconds
+const MIN_MEMORY_LEN  = 10; // skip memory update for trivial messages
 
 const BOSS_NAME    = process.env.BOSS_NAME    || 'Mako';
 const BOSS_ALIASES = process.env.BOSS_ALIASES || '';
@@ -101,6 +112,11 @@ module.exports = async (req, res) => {
     const { message } = req.body;
     if (!message || !message.text) return res.status(200).send('OK');
 
+    // ── Dedup: skip if Telegram retried this webhook ─────────────────────────
+    const dedupKey = `${DEDUP_PREFIX}${message.message_id}`;
+    const isNew = await redis.set(dedupKey, '1', 'EX', DEDUP_TTL, 'NX');
+    if (!isNew) return res.status(200).send('OK');
+
     const senderId   = message.from?.id;
     const chatId     = message.chat.id;
     const text       = message.text;
@@ -122,6 +138,11 @@ module.exports = async (req, res) => {
 
     // ── Boss commands (DM only) ──────────────────────────────────────────────
     if (isBoss && isPrivate) {
+
+      if (text === '/start') {
+        await bot.sendMessage(chatId, `What's good ${BOSS_NAME} 👋\nI'm online and ready. Type /help to see what I can do.`);
+        return res.status(200).send('OK');
+      }
 
       if (text.startsWith('/allow ')) {
         const id = text.slice(7).trim().replace(/[<>]/g, '');
@@ -257,13 +278,16 @@ Rules:
       }
     }
 
+    // In groups, ignore slash commands from non-boss users
+    if (!isPrivate && text.startsWith('/')) return res.status(200).send('OK');
+
     // Track Boss presence in groups
     if (isBoss && !isPrivate) {
       redis.set(`${BOSS_GRP_PREFIX}${chatId}`, '1').catch(() => {});
     }
 
     // Only respond when mentioned, called by name, or Boss DM
-    if (!isPrivate && !text.includes(BOT_USERNAME) && !text.toLowerCase().includes('remy')) {
+    if (!isPrivate && !text.includes(BOT_USERNAME) && !/\bremy\b/i.test(text)) {
       return res.status(200).send('OK');
     }
 
@@ -313,14 +337,22 @@ You may reference things ${senderName} has personally shared with you. Never rev
 Use Markdown formatting where it improves clarity.
 Never sign off your messages or add any closing signature. Just reply directly.`;
 
-      const { text: aiResponse } = await generateText({
-        model: zhipu('glm-4.7'),
-        system: systemPrompt,
-        messages: [
-          ...history,
-          { role: 'user', content: cleanPrompt }
-        ],
-      });
+      let aiResponse;
+      try {
+        const result = await generateText({
+          model: zhipu('glm-4.7'),
+          system: systemPrompt,
+          messages: [
+            ...history,
+            { role: 'user', content: cleanPrompt }
+          ],
+        });
+        aiResponse = result.text;
+      } catch (aiErr) {
+        console.error('AI generation failed:', aiErr);
+        await bot.sendMessage(chatId, '⚠️ My brain glitched for a sec. Try again.');
+        return res.status(200).send('OK');
+      }
 
       await safeSend(chatId, aiResponse);
 
@@ -338,7 +370,7 @@ Never sign off your messages or add any closing signature. Just reply directly.`
         reply: aiResponse.slice(0, 200),
       });
 
-      Promise.all([
+      const backgroundTasks = [
         // Conversation history
         redis.lpush(histKey,
           JSON.stringify({ role: 'user', content: cleanPrompt }),
@@ -348,22 +380,25 @@ Never sign off your messages or add any closing signature. Just reply directly.`
         // Append-only raw log
         redis.lpush(RAW_LOG_KEY, logEntry)
           .then(() => redis.ltrim(RAW_LOG_KEY, 0, MAX_LOG_ENTRIES - 1)),
+      ];
 
-        // Structured memory update — incremental every exchange, full rebuild every 20
-        redis.incr('remy_exchange_count').then(async (count) => {
-          const shouldRebuild = count % 20 === 0;
+      // Only burn an LLM call on memory if the message is substantial
+      if (cleanPrompt.length >= MIN_MEMORY_LEN) {
+        backgroundTasks.push(
+          redis.incr('remy_exchange_count').then(async (count) => {
+            const shouldRebuild = count % 20 === 0;
 
-          if (shouldRebuild) {
-            // Full recompression from raw log every 20 exchanges
-            const recentLog = await redis.lrange(RAW_LOG_KEY, 0, 49);
-            const logText = recentLog.reverse().map(e => {
-              const { ts, sender, msg, reply } = JSON.parse(e);
-              return `[${ts.split('T')[0]}] ${sender}: "${msg}" → Remy: "${reply}"`;
-            }).join('\n');
+            if (shouldRebuild) {
+              // Full recompression from raw log every 20 exchanges
+              const recentLog = await redis.lrange(RAW_LOG_KEY, 0, 49);
+              const logText = recentLog.reverse().map(e => {
+                const { ts, sender, msg, reply } = JSON.parse(e);
+                return `[${ts.split('T')[0]}] ${sender}: "${msg}" → Remy: "${reply}"`;
+              }).join('\n');
 
-            const { text: rebuiltMemory } = await generateText({
-              model: zhipu('glm-4.7'),
-              prompt: `Rebuild Remy's structured memory by merging the current memory with recent exchanges. Fix any drift, remove duplicates, and ensure all facts are accurate and up to date.
+              const { text: rebuiltMemory } = await generateText({
+                model: zhipu('glm-4.7'),
+                prompt: `Rebuild Remy's structured memory by merging the current memory with recent exchanges. Fix any drift, remove duplicates, and ensure all facts are accurate and up to date.
 
 CURRENT MEMORY:
 ${memory || EMPTY_MEMORY}
@@ -380,13 +415,13 @@ Rules:
 - Remove duplicates and outdated facts (mark as superseded if needed)
 - One fact per bullet point, keep concise
 - Return ONLY the updated memory:`,
-            });
-            return redis.set(MEMORY_KEY, rebuiltMemory);
-          } else {
-            // Incremental update every other exchange
-            const { text: newMemory } = await generateText({
-              model: zhipu('glm-4.7'),
-              prompt: `You maintain Remy's structured long-term memory. Update ONLY the relevant sections based on the new exchange. Preserve ALL existing entries and their timestamps.
+              });
+              return redis.set(MEMORY_KEY, rebuiltMemory);
+            } else {
+              // Incremental update every other exchange
+              const { text: newMemory } = await generateText({
+                model: zhipu('glm-4.7'),
+                prompt: `You maintain Remy's structured long-term memory. Update ONLY the relevant sections based on the new exchange. Preserve ALL existing entries and their timestamps.
 
 CURRENT MEMORY:
 ${memory || EMPTY_MEMORY}
@@ -404,12 +439,14 @@ RULES:
 - If nothing new worth remembering, return the memory exactly as-is
 
 Return ONLY the updated memory, preserving the full structure:`,
-            });
-            return redis.set(MEMORY_KEY, newMemory);
-          }
-        }),
+              });
+              return redis.set(MEMORY_KEY, newMemory);
+            }
+          })
+        );
+      }
 
-      ]).catch(err => console.error('Background update failed:', err));
+      Promise.all(backgroundTasks).catch(err => console.error('Background update failed:', err));
 
     } finally {
       clearInterval(typingInterval);
