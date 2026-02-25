@@ -35,7 +35,7 @@ module.exports = async (req, res) => {
 
     if (!isBoss && !isFriend) return res.status(200).send('OK');
 
-    if (message.chat.type === 'private' || text.includes(BOT_USERNAME)) {
+    if (message.chat.type === 'private' || text.includes(BOT_USERNAME) || text.toLowerCase().includes('remy')) {
       await bot.sendChatAction(chatId, 'typing');
       const cleanPrompt = text.replace(BOT_USERNAME, '').trim();
 
