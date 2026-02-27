@@ -2,7 +2,6 @@ const Redis = require('ioredis');
 
 // ── Admin Authentication ─────────────────────────────────────────────────────
 
-// Validate admin password from request header
 function isAdmin(req) {
   const authHeader = req.headers['authorization'];
   const adminSecret = process.env.ADMIN_SECRET;
@@ -16,28 +15,35 @@ function isAdmin(req) {
     return false;
   }
 
-  // Support both "Bearer token" and plain token
   const token = authHeader.replace('Bearer ', '').trim();
   return token === adminSecret;
 }
 
-// ── Redis Setup ─────────────────────────────────────────────────────────
+// ── Lazy Redis Connection ────────────────────────────────────────────────────
+// Only connect when we actually need Redis (not for /auth checks)
 
-const redis = new Redis(process.env.REDIS_URL, {
-  connectTimeout: 5000,
-  commandTimeout: 10000,
-  maxRetriesPerRequest: 3,
-  keepAlive: 1000,
-  retryStrategy(times) {
-    if (times > 3) return null;
-    return Math.min(times * 300, 1000);
-  },
-});
-redis.on('error', err => console.error('Redis error:', err.message));
+let redis = null;
 
-// ── Helper Functions ─────────────────────────────────────────────────────
+function getRedis() {
+  if (!redis) {
+    redis = new Redis(process.env.REDIS_URL, {
+      connectTimeout: 10000,
+      commandTimeout: 10000,
+      maxRetriesPerRequest: 3,
+      keepAlive: 1000,
+      lazyConnect: true,
+      retryStrategy(times) {
+        if (times > 3) return null;
+        return Math.min(times * 300, 1000);
+      },
+    });
+    redis.on('error', err => console.error('[ADMIN] Redis error:', err.message));
+  }
+  return redis;
+}
 
-// Redis keys (same as webhook.js)
+// ── Redis Keys ───────────────────────────────────────────────────────────────
+
 const MEMORY_KEY      = 'remy_memory';
 const RAW_LOG_KEY     = 'remy_raw_log';
 const APPROVED_KEY    = 'approved_users';
@@ -45,7 +51,8 @@ const BOSS_GRP_PREFIX = 'boss_group_';
 const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
 
-// Format date nicely
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 function formatDate(isoString) {
   return new Date(isoString).toLocaleString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
@@ -53,28 +60,30 @@ function formatDate(isoString) {
   });
 }
 
-// Send JSON response
 function jsonResponse(res, data, status = 200) {
   res.setHeader('Content-Type', 'application/json');
   res.status(status).json(data);
 }
 
-// ── API Endpoints ────────────────────────────────────────────────────────
+// ── API Handler ──────────────────────────────────────────────────────────────
 
 module.exports = async (req, res) => {
-  const path = req.path || req.url?.split('?')[0] || '/';
+  // ── FIX: Strip /api/admin prefix so route matching works on Vercel ──
+  const rawPath = req.path || req.url?.split('?')[0] || '/';
+  const path = rawPath.replace(/^\/api\/admin/, '') || '/';
 
-  // CORS headers for frontend access
+  console.log(`[ADMIN] ${req.method} ${rawPath} → matched path: ${path}`);
+
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // Handle preflight
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  // ── GET /api/admin/auth ───────────────────────────────────────
+  // ── GET /auth — no Redis needed ────────────────────────────────────
   if (path === '/auth' && req.method === 'GET') {
     if (isAdmin(req)) {
       return jsonResponse(res, { authenticated: true, message: 'Welcome, Boss' });
@@ -82,21 +91,26 @@ module.exports = async (req, res) => {
     return jsonResponse(res, { authenticated: false, message: 'Access denied' }, 401);
   }
 
-  // ── All other endpoints require auth ───────────────────────────
+  // ── All other endpoints require auth ───────────────────────────────
   if (!isAdmin(req)) {
     return jsonResponse(res, { error: 'Unauthorized' }, 401);
   }
 
+  // ── Connect Redis only for authenticated data endpoints ────────────
+  const db = getRedis();
+
   try {
-    // ── GET /api/admin/stats ─────────────────────────────────────
+    await db.connect().catch(() => {});  // no-op if already connected
+
+    // ── GET /stats ───────────────────────────────────────────────────
     if (path === '/stats' && req.method === 'GET') {
       const [logLen, memStr, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
-        redis.llen(RAW_LOG_KEY),
-        redis.get(MEMORY_KEY),
-        redis.scard(APPROVED_KEY),
-        redis.get('remy_exchange_count'),
-        redis.llen(NOTES_KEY),
-        redis.zcard(REMINDERS_KEY),
+        db.llen(RAW_LOG_KEY),
+        db.get(MEMORY_KEY),
+        db.scard(APPROVED_KEY),
+        db.get('remy_exchange_count'),
+        db.llen(NOTES_KEY),
+        db.zcard(REMINDERS_KEY),
       ]);
 
       const memKB = memStr ? (memStr.length / 1024).toFixed(1) : 0;
@@ -112,16 +126,16 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ── GET /api/admin/memory ───────────────────────────────────
+    // ── GET /memory ──────────────────────────────────────────────────
     if (path === '/memory' && req.method === 'GET') {
-      const memory = await redis.get(MEMORY_KEY);
+      const memory = await db.get(MEMORY_KEY);
       return jsonResponse(res, {
         memory: memory || 'No memory yet.',
         length: memory?.length || 0,
       });
     }
 
-    // ── PUT /api/admin/memory ───────────────────────────────────
+    // ── PUT /memory ──────────────────────────────────────────────────
     if (path === '/memory' && req.method === 'PUT') {
       const body = req.body || {};
       const newMemory = body.memory;
@@ -130,13 +144,13 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Invalid memory format' }, 400);
       }
 
-      await redis.set(MEMORY_KEY, newMemory);
+      await db.set(MEMORY_KEY, newMemory);
       return jsonResponse(res, { success: true, message: 'Memory updated' });
     }
 
-    // ── GET /api/admin/notes ───────────────────────────────────
+    // ── GET /notes ───────────────────────────────────────────────────
     if (path === '/notes' && req.method === 'GET') {
-      const entries = await redis.lrange(NOTES_KEY, 0, 99);
+      const entries = await db.lrange(NOTES_KEY, 0, 99);
       const notes = entries.map((e, i) => {
         const { ts, text } = JSON.parse(e);
         return { id: i + 1, timestamp: ts, text };
@@ -144,7 +158,7 @@ module.exports = async (req, res) => {
       return jsonResponse(res, { notes });
     }
 
-    // ── POST /api/admin/notes ──────────────────────────────────
+    // ── POST /notes ──────────────────────────────────────────────────
     if (path === '/notes' && req.method === 'POST') {
       const body = req.body || {};
       const text = body.text?.trim();
@@ -153,32 +167,31 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Note text required' }, 400);
       }
 
-      await redis.lpush(NOTES_KEY, JSON.stringify({
+      await db.lpush(NOTES_KEY, JSON.stringify({
         ts: new Date().toISOString(),
         text,
       }));
       return jsonResponse(res, { success: true, message: 'Note added' });
     }
 
-    // ── DELETE /api/admin/notes/:id ────────────────────────────
+    // ── DELETE /notes/:id ────────────────────────────────────────────
     if (path.startsWith('/notes/') && req.method === 'DELETE') {
       const id = parseInt(path.split('/notes/')[1]);
-      const entries = await redis.lrange(NOTES_KEY, 0, -1);
+      const entries = await db.lrange(NOTES_KEY, 0, -1);
 
       if (id < 1 || id > entries.length) {
         return jsonResponse(res, { error: 'Invalid note ID' }, 400);
       }
 
-      // Redis lists don't support direct index delete — remove by value
       const target = entries[id - 1];
-      await redis.lrem(NOTES_KEY, 1, target);
+      await db.lrem(NOTES_KEY, 1, target);
 
       return jsonResponse(res, { success: true, message: `Note ${id} deleted` });
     }
 
-    // ── GET /api/admin/reminders ───────────────────────────────
+    // ── GET /reminders ───────────────────────────────────────────────
     if (path === '/reminders' && req.method === 'GET') {
-      const all = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+      const all = await db.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
       const reminders = [];
 
       for (let i = 0; i < all.length; i += 2) {
@@ -195,7 +208,7 @@ module.exports = async (req, res) => {
       return jsonResponse(res, { reminders });
     }
 
-    // ── POST /api/admin/reminders ──────────────────────────────
+    // ── POST /reminders ──────────────────────────────────────────────
     if (path === '/reminders' && req.method === 'POST') {
       const body = req.body || {};
       const { when, message } = body;
@@ -209,31 +222,31 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Invalid date format' }, 400);
       }
 
-      await redis.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ message }));
+      await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ message }));
       return jsonResponse(res, { success: true, message: 'Reminder set' });
     }
 
-    // ── DELETE /api/admin/reminders/:id ─────────────────────────
+    // ── DELETE /reminders/:id ────────────────────────────────────────
     if (path.startsWith('/reminders/') && req.method === 'DELETE') {
       const id = parseInt(path.split('/reminders/')[1]);
-      const all = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+      const all = await db.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
 
       if (id < 1 || id * 2 > all.length) {
         return jsonResponse(res, { error: 'Invalid reminder ID' }, 400);
       }
 
       const target = all[(id - 1) * 2];
-      await redis.zrem(REMINDERS_KEY, target);
+      await db.zrem(REMINDERS_KEY, target);
 
       return jsonResponse(res, { success: true, message: `Reminder ${id} deleted` });
     }
 
-    // ── GET /api/admin/log ─────────────────────────────────────
+    // ── GET /log ─────────────────────────────────────────────────────
     if (path === '/log' && req.method === 'GET') {
       const query = req.query || {};
       const limit = Math.min(parseInt(query.limit) || 50, 500);
 
-      const entries = await redis.lrange(RAW_LOG_KEY, 0, limit - 1);
+      const entries = await db.lrange(RAW_LOG_KEY, 0, limit - 1);
       const log = entries.map(e => {
         const { ts, sender, msg, reply, isBoss, chat } = JSON.parse(e);
         return {
@@ -250,11 +263,11 @@ module.exports = async (req, res) => {
       return jsonResponse(res, { log, count: entries.length });
     }
 
-    // ── GET /api/admin/users ───────────────────────────────────
+    // ── GET /users ───────────────────────────────────────────────────
     if (path === '/users' && req.method === 'GET') {
       const [users, groupKeys] = await Promise.all([
-        redis.smembers(APPROVED_KEY),
-        redis.keys(`${BOSS_GRP_PREFIX}*`),
+        db.smembers(APPROVED_KEY),
+        db.keys(`${BOSS_GRP_PREFIX}*`),
       ]);
 
       const groups = groupKeys.map(k => k.replace(BOSS_GRP_PREFIX, ''));
@@ -267,7 +280,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ── POST /api/admin/users ──────────────────────────────────
+    // ── POST /users ──────────────────────────────────────────────────
     if (path === '/users' && req.method === 'POST') {
       const body = req.body || {};
       const { userId, action } = body;
@@ -277,20 +290,20 @@ module.exports = async (req, res) => {
       }
 
       if (action === 'add') {
-        await redis.sadd(APPROVED_KEY, userId);
+        await db.sadd(APPROVED_KEY, userId);
         return jsonResponse(res, { success: true, message: `User ${userId} added` });
       }
 
       if (action === 'remove') {
-        await redis.srem(APPROVED_KEY, userId);
+        await db.srem(APPROVED_KEY, userId);
         return jsonResponse(res, { success: true, message: `User ${userId} removed` });
       }
 
       return jsonResponse(res, { error: 'Invalid action (use "add" or "remove")' }, 400);
     }
 
-    // ── Unknown endpoint ────────────────────────────────────────
-    return jsonResponse(res, { error: 'Not found' }, 404);
+    // ── Unknown endpoint ─────────────────────────────────────────────
+    return jsonResponse(res, { error: 'Not found', path }, 404);
 
   } catch (error) {
     console.error('[ADMIN] Error:', error);
