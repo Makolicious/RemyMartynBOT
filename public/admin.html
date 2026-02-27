@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Remy Admin">
+  <title>Remy Admin Dashboard</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" sizes="192x192" href="/icon-192.svg">
+  <link rel="apple-touch-icon" href="/icon-192.svg">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Service Worker Registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then(() => {
+          console.log('[PWA] Service Worker registered');
+        }).catch((err) => {
+          console.log('[PWA] Service Worker registration failed:', err);
+        });
+      });
+    }
+  </script>
+
+  <style>
+    body {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      min-height: 100vh;
+    }
+    .card {
+      background: rgba(255,255,255,0.03);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .nav-btn.active {
+      background: rgba(99,102,241,0.2);
+      border-color: #6366f1;
+    }
+    input, select {
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: white;
+    }
+    input:focus, select:focus {
+      border-color: #6366f1;
+      outline: none;
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(255,255,255,0.05);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.2);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="text-white font-sans">
+  <!-- Login Screen -->
+  <div id="loginScreen" class="flex items-center justify-center min-h-screen p-4">
+    <div class="card rounded-2xl p-8 w-full max-w-md text-center">
+      <div class="text-4xl mb-6">🤖</div>
+      <h1 class="text-2xl font-bold mb-2">Remy Admin</h1>
+      <p class="text-gray-400 mb-6">Enter your admin password</p>
+      <input type="password" id="adminPassword" placeholder="Admin Password" class="w-full px-4 py-3 rounded-lg mb-4 text-lg">
+      <button onclick="login()" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 rounded-lg transition">
+        Enter Dashboard
+      </button>
+      <p id="loginError" class="text-red-400 mt-4 hidden"></p>
+    </div>
+  </div>
+
+  <!-- Main Dashboard -->
+  <div id="dashboard" class="hidden">
+    <!-- Header -->
+    <div class="card border-b border-white/10 p-4 sticky top-0 z-50 backdrop-blur-xl">
+      <div class="flex items-center justify-between max-w-4xl mx-auto">
+        <div class="flex items-center gap-3">
+          <span class="text-2xl">🤖</span>
+          <span class="font-bold text-lg">Remy Admin</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="connectionStatus" class="text-green-400 text-sm">● Connected</span>
+          <button onclick="logout()" class="text-gray-400 hover:text-white transition">Logout</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation -->
+    <div class="max-w-4xl mx-auto p-4">
+      <div class="flex gap-2 overflow-x-auto pb-2 mb-6">
+        <button onclick="showSection('stats')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="stats">📊 Stats</button>
+        <button onclick="showSection('memory')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="memory">🧠 Memory</button>
+        <button onclick="showSection('notes')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
+        <button onclick="showSection('reminders')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="reminders">⏰ Reminders</button>
+        <button onclick="showSection('log')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
+        <button onclick="showSection('users')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="users">👥 Users</button>
+      </div>
+    </div>
+
+    <!-- Content Sections -->
+    <div class="max-w-4xl mx-auto px-4 pb-8">
+
+      <!-- Stats Section -->
+      <section id="section-stats" class="section">
+        <h2 class="text-xl font-bold mb-4">Dashboard Stats</h2>
+        <div id="statsContent" class="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-indigo-400" id="statExchanges">-</div>
+            <div class="text-gray-400">Total Exchanges</div>
+          </div>
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-green-400" id="statLogEntries">-</div>
+            <div class="text-gray-400">Log Entries</div>
+          </div>
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-purple-400" id="statMemorySize">-</div>
+            <div class="text-gray-400">Memory Size</div>
+          </div>
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-yellow-400" id="statApprovedUsers">-</div>
+            <div class="text-gray-400">Approved Users</div>
+          </div>
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-blue-400" id="statSavedNotes">-</div>
+            <div class="text-gray-400">Saved Notes</div>
+          </div>
+          <div class="card rounded-xl p-4">
+            <div class="text-3xl font-bold text-red-400" id="statPendingReminders">-</div>
+            <div class="text-gray-400">Pending Reminders</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Memory Section -->
+      <section id="section-memory" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">🧠 Memory</h2>
+          <button onclick="saveMemory()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">Save Changes</button>
+        </div>
+        <textarea id="memoryEditor" class="w-full h-96 p-4 rounded-lg text-sm"></textarea>
+      </section>
+
+      <!-- Notes Section -->
+      <section id="section-notes" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">📝 Notes</h2>
+          <button onclick="addNote()" class="bg-indigo-500 hover:bg-indigo-600 px-4 py-2 rounded-lg font-bold transition">+ Add Note</button>
+        </div>
+        <div id="notesList" class="space-y-3"></div>
+      </section>
+
+      <!-- Reminders Section -->
+      <section id="section-reminders" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">⏰ Reminders</h2>
+          <div class="flex gap-2">
+            <input type="datetime-local" id="reminderTime" class="px-3 py-2 rounded-lg">
+            <input type="text" id="reminderText" placeholder="Reminder text..." class="px-3 py-2 rounded-lg w-48">
+            <button onclick="addReminder()" class="bg-indigo-500 hover:bg-indigo-600 px-4 py-2 rounded-lg font-bold transition">Add</button>
+          </div>
+        </div>
+        <div id="remindersList" class="space-y-3"></div>
+      </section>
+
+      <!-- Log Section -->
+      <section id="section-log" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">📋 Conversation Log</h2>
+          <select id="logLimit" onchange="loadLog()" class="px-3 py-2 rounded-lg">
+            <option value="20">Last 20</option>
+            <option value="50">Last 50</option>
+            <option value="100">Last 100</option>
+            <option value="500">Last 500</option>
+          </select>
+        </div>
+        <div id="logList" class="space-y-3"></div>
+      </section>
+
+      <!-- Users Section -->
+      <section id="section-users" class="section hidden">
+        <h2 class="text-xl font-bold mb-4">👥 User Management</h2>
+        <div class="card rounded-xl p-4 mb-4">
+          <input type="text" id="userIdInput" placeholder="User Telegram ID" class="px-3 py-2 rounded-lg mr-2">
+          <button onclick="addUser()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">Add</button>
+          <button onclick="removeUser()" class="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg font-bold transition">Remove</button>
+        </div>
+        <div id="usersList" class="space-y-3"></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div class="text-2xl">Loading...</div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="hidden fixed bottom-4 left-4 right-4 bg-indigo-500 px-4 py-2 rounded-lg shadow-xl z-50"></div>
+
+  <script>
+    // ── Configuration ───────────────────────────────────────────────────────
+    const API_BASE = '/api/admin';
+    let authToken = localStorage.getItem('remy_auth_token') || '';
+
+    // ── Authentication ───────────────────────────────────────────────────
+    async function login() {
+      const password = document.getElementById('adminPassword').value;
+      const errorEl = document.getElementById('loginError');
+
+      if (!password) {
+        errorEl.textContent = 'Please enter a password';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/auth`, {
+          headers: { 'Authorization': password }
+        });
+        const data = await res.json();
+
+        if (data.authenticated) {
+          localStorage.setItem('remy_auth_token', password);
+          authToken = password;
+          showDashboard();
+        } else {
+          errorEl.textContent = data.message || 'Access denied';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = 'Connection failed';
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('remy_auth_token');
+      authToken = '';
+      document.getElementById('dashboard').classList.add('hidden');
+      document.getElementById('loginScreen').classList.remove('hidden');
+    }
+
+    function showDashboard() {
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+      loadStats();
+      showSection('stats');
+    }
+
+    // ── Navigation ─────────────────────────────────────────────────────
+    function showSection(section) {
+      document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+      document.getElementById(`section-${section}`).classList.remove('hidden');
+      document.querySelector(`[data-section="${section}"]`)?.classList.add('active');
+
+      switch(section) {
+        case 'stats': loadStats(); break;
+        case 'memory': loadMemory(); break;
+        case 'notes': loadNotes(); break;
+        case 'reminders': loadReminders(); break;
+        case 'log': loadLog(); break;
+        case 'users': loadUsers(); break;
+      }
+    }
+
+    // ── API Helper ─────────────────────────────────────────────────────
+    async function apiCall(endpoint, options = {}) {
+      showLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}${endpoint}`, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authToken,
+            ...options.headers
+          },
+          ...options
+        });
+        const data = await res.json();
+
+        if (res.status === 401) {
+          logout();
+          showToast('Session expired', 'error');
+          return null;
+        }
+
+        if (data.error) {
+          showToast(data.error, 'error');
+        }
+
+        return data;
+      } finally {
+        showLoading(false);
+      }
+    }
+
+    function showLoading(show) {
+      document.getElementById('loading').classList.toggle('hidden', !show);
+    }
+
+    function showToast(message, type = 'success') {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = `fixed bottom-4 left-4 right-4 px-4 py-2 rounded-lg shadow-xl z-50 ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 3000);
+    }
+
+    // ── Stats ─────────────────────────────────────────────────────────
+    async function loadStats() {
+      const data = await apiCall('/stats');
+      if (data) {
+        document.getElementById('statExchanges').textContent = data.totalExchanges;
+        document.getElementById('statLogEntries').textContent = data.logEntries;
+        document.getElementById('statMemorySize').textContent = data.memorySize;
+        document.getElementById('statApprovedUsers').textContent = data.approvedUsers;
+        document.getElementById('statSavedNotes').textContent = data.savedNotes;
+        document.getElementById('statPendingReminders').textContent = data.pendingReminders;
+      }
+    }
+
+    // ── Memory ───────────────────────────────────────────────────────
+    async function loadMemory() {
+      const data = await apiCall('/memory');
+      if (data) {
+        document.getElementById('memoryEditor').value = data.memory;
+      }
+    }
+
+    async function saveMemory() {
+      const memory = document.getElementById('memoryEditor').value;
+      const data = await apiCall('/memory', {
+        method: 'PUT',
+        body: JSON.stringify({ memory })
+      });
+      if (data?.success) {
+        showToast('Memory saved!');
+      }
+    }
+
+    // ── Notes ────────────────────────────────────────────────────────
+    async function loadNotes() {
+      const data = await apiCall('/notes');
+      if (data) {
+        const list = document.getElementById('notesList');
+        list.innerHTML = data.notes.map(n => `
+          <div class="card rounded-lg p-4">
+            <div class="text-gray-400 text-sm mb-2">${n.timestamp.slice(0, 10)}</div>
+            <p class="mb-3">${n.text}</p>
+            <button onclick="deleteNote(${n.id})" class="text-red-400 hover:text-red-300 text-sm">Delete</button>
+          </div>
+        `).join('');
+      }
+    }
+
+    async function addNote() {
+      const text = prompt('Enter your note:');
+      if (!text) return;
+
+      const data = await apiCall('/notes', {
+        method: 'POST',
+        body: JSON.stringify({ text })
+      });
+      if (data?.success) {
+        loadNotes();
+        showToast('Note added!');
+      }
+    }
+
+    async function deleteNote(id) {
+      if (!confirm('Delete this note?')) return;
+
+      const data = await apiCall(`/notes/${id}`, { method: 'DELETE' });
+      if (data?.success) {
+        loadNotes();
+        showToast('Note deleted');
+      }
+    }
+
+    // ── Reminders ────────────────────────────────────────────────────
+    async function loadReminders() {
+      const data = await apiCall('/reminders');
+      if (data) {
+        const list = document.getElementById('remindersList');
+        if (data.reminders.length === 0) {
+          list.innerHTML = '<p class="text-gray-400 text-center py-8">No pending reminders</p>';
+          return;
+        }
+        list.innerHTML = data.reminders.map(r => `
+          <div class="card rounded-lg p-4 flex justify-between items-start">
+            <div>
+              <div class="text-yellow-400 font-bold mb-1">${r.formattedDate}</div>
+              <p>${r.message}</p>
+            </div>
+            <button onclick="deleteReminder(${r.id})" class="text-red-400 hover:text-red-300 ml-4">✕</button>
+          </div>
+        `).join('');
+      }
+    }
+
+    async function addReminder() {
+      const time = document.getElementById('reminderTime').value;
+      const text = document.getElementById('reminderText').value;
+
+      if (!time || !text) {
+        showToast('Enter date and text', 'error');
+        return;
+      }
+
+      const data = await apiCall('/reminders', {
+        method: 'POST',
+        body: JSON.stringify({ when: time, message: text })
+      });
+      if (data?.success) {
+        document.getElementById('reminderText').value = '';
+        loadReminders();
+        showToast('Reminder added!');
+      }
+    }
+
+    async function deleteReminder(id) {
+      if (!confirm('Delete this reminder?')) return;
+
+      const data = await apiCall(`/reminders/${id}`, { method: 'DELETE' });
+      if (data?.success) {
+        loadReminders();
+        showToast('Reminder deleted');
+      }
+    }
+
+    // ── Log ────────────────────────────────────────────────────────
+    async function loadLog() {
+      const limit = document.getElementById('logLimit').value;
+      const data = await apiCall(`/log?limit=${limit}`);
+      if (data) {
+        const list = document.getElementById('logList');
+        if (data.log.length === 0) {
+          list.innerHTML = '<p class="text-gray-400 text-center py-8">No log entries</p>';
+          return;
+        }
+        list.innerHTML = data.log.map(entry => `
+          <div class="card rounded-lg p-4 ${entry.isBoss ? 'border-l-4 border-indigo-500' : ''}">
+            <div class="flex justify-between items-center mb-2">
+              <div>
+                <span class="text-indigo-400 font-bold">${entry.sender}</span>
+                <span class="text-gray-400 text-sm ml-2">${entry.formattedDate}</span>
+                <span class="text-xs px-2 py-1 rounded ${entry.chatType === 'private' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">${entry.chatType}</span>
+              </div>
+            </div>
+            <p class="text-gray-300 mb-2">${entry.message}</p>
+            <p class="text-indigo-300 italic text-sm">→ ${entry.reply}</p>
+          </div>
+        `).join('');
+      }
+    }
+
+    // ── Users ────────────────────────────────────────────────────────
+    async function loadUsers() {
+      const data = await apiCall('/users');
+      if (data) {
+        const list = document.getElementById('usersList');
+        list.innerHTML = `
+          <div class="card rounded-lg p-4 mb-4">
+            <h3 class="text-lg font-bold mb-2">Approved Users (${data.totalUsers})</h3>
+            <p class="text-gray-400 mb-2">Telegram IDs with bot access:</p>
+            <div class="flex flex-wrap gap-2">
+              ${data.approvedUsers.map(id => `<span class="bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full text-sm">${id}</span>`).join('')}
+            </div>
+          </div>
+          <div class="card rounded-lg p-4">
+            <h3 class="text-lg font-bold mb-2">Active Groups (${data.totalGroups})</h3>
+            <p class="text-gray-400 mb-2">Groups where Boss is present:</p>
+            <div class="flex flex-wrap gap-2">
+              ${data.activeGroups.map(g => `<span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-sm">${g}</span>`).join('')}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    async function addUser() {
+      const userId = document.getElementById('userIdInput').value.trim();
+      if (!userId) {
+        showToast('Enter user ID', 'error');
+        return;
+      }
+
+      const data = await apiCall('/users', {
+        method: 'POST',
+        body: JSON.stringify({ userId, action: 'add' })
+      });
+      if (data?.success) {
+        document.getElementById('userIdInput').value = '';
+        loadUsers();
+        showToast(data.message);
+      }
+    }
+
+    async function removeUser() {
+      const userId = document.getElementById('userIdInput').value.trim();
+      if (!userId) {
+        showToast('Enter user ID', 'error');
+        return;
+      }
+
+      if (!confirm(`Remove user ${userId}?`)) return;
+
+      const data = await apiCall('/users', {
+        method: 'POST',
+        body: JSON.stringify({ userId, action: 'remove' })
+      });
+      if (data?.success) {
+        document.getElementById('userIdInput').value = '';
+        loadUsers();
+        showToast(data.message);
+      }
+    }
+
+    // ── Init ─────────────────────────────────────────────────────────
+    if (authToken) {
+      showDashboard();
+    }
+  </script>
+</body>
+</html>

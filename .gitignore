@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Personal workspace - NEVER commit personal data
+.claude/
+.private/
+
+# Environment variables - Contains API keys, tokens, secrets
+.env
+.env.local
+.env.*.local
+
+# Logs - May contain personal conversations/data
+*.log
+logs/
+
+# Session files - Personal work history
+Session*.md
+*.session
+
+# Backup and temporary files
+*.backup
+*.bak
+*.tmp
+*.temp
+*~
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.sublime-project
+.sublime-workspace
+
+# Build artifacts
+dist/
+build/
+.cache/
+
+# Testing coverage
+coverage/
+.nyc_output/
