@@ -423,12 +423,18 @@ module.exports = async (req, res) => {
       const results = [];
 
       for (const table of tables) {
-        const category = table.title;
+        let category = table.title;
 
-        // Skip if category doesn't exist
+        // Legacy tables might have numbered prefixes like "1. Boss Profile"
+        // Try to match by removing number prefix
         if (!memory.CATEGORIES.includes(category)) {
-          skipped++;
-          continue;
+          const withoutNumber = category.replace(/^\d+\.\s*/, '');
+          if (memory.CATEGORIES.includes(withoutNumber)) {
+            category = withoutNumber;
+          } else {
+            skipped++;
+            continue;
+          }
         }
 
         let categoryMigrated = 0;
