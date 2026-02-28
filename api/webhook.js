@@ -880,55 +880,6 @@ module.exports = async (req, res) => {
 
       // ── Self-Organizing Memory Commands ────────────────────────────────────
 
-      // /mempin — Extract and pin important facts from legacy memory
-      if (text === '/mempin') {
-        const oldMemory = await redis.get(MEMORY_KEY);
-        if (!oldMemory || oldMemory.length < 100) {
-          await bot.sendMessage(chatId, '⚠️ No legacy memory to extract from. Use /memory to add facts first.');
-          return res.status(200).send('OK');
-        }
-        await bot.sendMessage(chatId, '⏳ Analyzing memory for important facts to pin...');
-        try {
-          const { text: extractionResult } = await generateText({
-            model: UTILITY_MODEL,
-            prompt: `Extract IMPORTANT and PERMANENT facts from this memory that should never decay.
-
-RULES for PINNING:
-- PIN core identity: name, location, contact info
-- PIN long-term goals and aspirations
-- PIN major life decisions and commitments
-- PIN key relationships (family, close friends)
-- DO NOT PIN: temporary preferences, minor habits, entertainment, casual interests
-- DO NOT PIN: facts that may change quickly
-
-Extract up to 10 most important facts.
-
-CURRENT MEMORY:
-${oldMemory}
-
-Return as JSON array of objects with: {content, category, pinned}
-Categories to use: Boss Profile, Goals & Aspirations, Family Members, Friends & Contacts, Key Dates & Milestones, Decisions & Commitments
-
-Return ONLY the JSON array, nothing else:`,
-          });
-          const facts = JSON.parse(extractionResult);
-          const categories = memory.CATEGORIES;
-          let pinnedCount = 0;
-          for (const fact of facts) {
-            const category = categories.find(c => c.toLowerCase().includes(fact.category?.toLowerCase() || ''));
-            if (category) {
-              await memory.addMemory(fact.content, category, 90, true); // pinned=true
-              pinnedCount++;
-            }
-          }
-          await bot.sendMessage(chatId, `✅ Pinned *${pinnedCount}* important facts to permanent memory.`, { parse_mode: 'Markdown' });
-        } catch (err) {
-          console.error('Memory pin extraction failed:', err);
-          await bot.sendMessage(chatId, '❌ Extraction failed. Check logs.');
-        }
-        return res.status(200).send('OK');
-      }
-
       // /memadd <content> <category>
       if (text.startsWith('/memadd ')) {
         const args = text.slice(8).trim();
@@ -1233,8 +1184,8 @@ Return ONLY the JSON array, nothing else:`,
           `\`/remove <id>\` or \`/revoke <id>\` — revoke\n` +
           `\`/status\` or \`/list\` — approved users & groups\n\n` +
           `*Memory (Self-Organizing)*\n` +
-          `\`/mempin\` — extract & pin important facts from legacy memory\n` +
           `\`/memadd <content> <category>\` — add memory\n` +
+          `\`/memcat <category>\` — view memories by category\n` +
           `\`/memcat <category>\` — view memories by category\n` +
           `\`/memsearch <query>\` — search all memories\n` +
           `\`/memstats\` — view memory statistics\n` +

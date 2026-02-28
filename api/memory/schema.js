@@ -26,6 +26,15 @@ const CATEGORIES = [
   'Notes & Miscellaneous'
 ];
 
+// Categories that are ALWAYS pinned - identity and core facts never decay
+const PERMANENT_CATEGORIES = [
+  'Boss Profile',
+  'Goals & Aspirations',
+  'Family Members',
+  'Key Dates & Milestones',
+  'Decisions & Commitments'
+];
+
 const DEFAULT_DECAY_RATES = {
   'Boss Profile': 0.98,
   'Personality & Traits': 0.97,
@@ -82,22 +91,26 @@ function generateId() {
 /**
  * Create a new memory entry
  */
-function createMemory(content, category, confidence = 80, pinned = false) {
+function createMemory(content, category, confidence = 80, pinned = null) {
   const id = generateId();
   const now = Date.now();
+  const normalizedCategory = normalizeCategory(category);
+
+  // Auto-pin if category is permanent (identity, goals, etc)
+  const shouldPin = pinned !== null ? pinned : PERMANENT_CATEGORIES.includes(normalizedCategory);
 
   return {
     id,
     content,
-    category: normalizeCategory(category),
-    importance: DEFAULT_IMPORTANCE_BY_CATEGORY[category] || 70,
+    category: normalizedCategory,
+    importance: DEFAULT_IMPORTANCE_BY_CATEGORY[normalizedCategory] || 70,
     confidence: Math.min(100, Math.max(0, confidence)),
     created_at: now,
     last_accessed: now,
     access_count: 0,
-    decay_rate: DEFAULT_DECAY_RATES[category] || 0.95,
+    decay_rate: DEFAULT_DECAY_RATES[normalizedCategory] || 0.95,
     related_ids: [],
-    pinned: pinned  // AI can mark important facts as permanent (no decay)
+    pinned: shouldPin  // Permanent categories auto-pin
   };
 }
 
@@ -148,6 +161,7 @@ function validateMemory(memory) {
 
 module.exports = {
   CATEGORIES,
+  PERMANENT_CATEGORIES,
   DEFAULT_DECAY_RATES,
   DEFAULT_IMPORTANCE_BY_CATEGORY,
   generateId,
