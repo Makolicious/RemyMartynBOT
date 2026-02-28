@@ -404,8 +404,13 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Get existing memories for deduplication
-      const existingMemories = await memory.getMemoriesByCategory('', 100);
+      // Get existing memories for deduplication (from ALL categories)
+      const allCategories = memory.CATEGORIES;
+      const existingMemories = [];
+      for (const cat of allCategories) {
+        const catMemories = await memory.getMemoriesByCategory(cat, 50);
+        existingMemories.push(...catMemories);
+      }
       const existingKeys = new Set(
         existingMemories.map(m => `${m.category}:${m.content.toLowerCase().slice(0, 30)}`)
       );
