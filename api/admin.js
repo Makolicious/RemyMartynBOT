@@ -410,13 +410,11 @@ module.exports = async (req, res) => {
 
     // ── POST /memories/migrate — migrate legacy memory to new system ──
     if (path === '/memories/migrate' && req.method === 'POST') {
-      const { parseTables } = require('./utils/formatter');
       const LEGACY_MEMORY_KEY = 'remy_memory';
 
       const legacyMemory = await db.get(LEGACY_MEMORY_KEY);
 
       console.log('[MIGRATE] Legacy memory length:', legacyMemory?.length || 0);
-      console.log('[MIGRATE] First 500 chars:', legacyMemory?.substring(0, 500));
 
       if (!legacyMemory) {
         return jsonResponse(res, {
@@ -436,11 +434,68 @@ module.exports = async (req, res) => {
         existingMemories.map(m => `${m.category}:${m.content.toLowerCase().slice(0, 30)}`)
       );
 
-      // Parse markdown tables
-      const tables = parseTables(legacyMemory);
+      // ── More robust custom parser ────────────────────────────────
+      function robustParseTables(memory) {
+        const lines = memory.split('\n');
+        const tables = [];
+        let currentCategory = null;
+        let inTable = false;
+        let currentTableRows = [];
 
-      console.log('[MIGRATE] Parsed tables count:', tables.length);
-      console.log('[MIGRATE] Table titles:', tables.map(t => t.title));
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+
+          // Check for category header (## followed by text)
+          if (line.match(/^##+\s*(.+)/)) {
+            // Save previous table if any
+            if (currentCategory && currentTableRows.length > 0) {
+              tables.push({ title: currentCategory, rows: currentTableRows });
+            }
+            // Start new category
+            const match = line.match(/^##+\s*(.+)/);
+            currentCategory = match[1].trim();
+            // Remove number prefix like "1. Boss Profile" -> "Boss Profile"
+            currentCategory = currentCategory.replace(/^\d+\.\s*/, '');
+            inTable = false;
+            currentTableRows = [];
+            continue;
+          }
+
+          // Check for table start (line with |)
+          if (line.includes('|') && line.split('|').length >= 3) {
+            inTable = true;
+            const cells = line.split('|')
+              .map(c => c.trim())
+              .filter(c => c.length > 0);
+
+            // Skip separator row (cells with only dashes)
+            if (cells.some(c => /^-+$/.test(c))) {
+              continue;
+            }
+
+            if (cells.length > 0) {
+              currentTableRows.push(cells);
+            }
+          } else if (inTable && line === '') {
+            // Empty line ends the table
+            if (currentCategory && currentTableRows.length > 0) {
+              tables.push({ title: currentCategory, rows: currentTableRows });
+              currentTableRows = [];
+            }
+            inTable = false;
+          }
+        }
+
+        // Don't forget the last table
+        if (currentCategory && currentTableRows.length > 0) {
+          tables.push({ title: currentCategory, rows: currentTableRows });
+        }
+
+        console.log('[MIGRATE] Parsed tables:', tables.length, 'Categories:', tables.map(t => t.title));
+        return tables;
+      }
+
+      const tables = robustParseTables(legacyMemory);
 
       let totalMigrated = 0;
       let skipped = 0;
@@ -449,22 +504,18 @@ module.exports = async (req, res) => {
       for (const table of tables) {
         let category = table.title;
 
-        // Legacy tables might have numbered prefixes like "1. Boss Profile"
-        // Try to match by removing number prefix
+        // Skip if category doesn't exist
         if (!memory.CATEGORIES.includes(category)) {
-          const withoutNumber = category.replace(/^\d+\.\s*/, '');
-          if (memory.CATEGORIES.includes(withoutNumber)) {
-            category = withoutNumber;
-          } else {
-            skipped++;
-            continue;
-          }
+          console.log('[MIGRATE] Skipping unknown category:', category);
+          skipped++;
+          continue;
         }
 
         let categoryMigrated = 0;
 
         for (const row of table.rows) {
-          const content = row[0] || row.join(' ').trim();
+          // Get the first non-placeholder cell as content
+          const content = row[0] || row[1] || row.join(' ').trim();
 
           // Skip empty or placeholder rows
           if (!content ||
@@ -485,6 +536,7 @@ module.exports = async (req, res) => {
           // Check for duplicates
           const key = `${category}:${cleanContent.toLowerCase().slice(0, 30)}`;
           if (existingKeys.has(key)) {
+            console.log('[MIGRATE] Skipping duplicate:', cleanContent);
             skipped++;
             continue;
           }
