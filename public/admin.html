@@ -32,26 +32,31 @@
 
   <style>
     body {
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #16213e 100%);
       min-height: 100vh;
+      color: #f0f0f0;
     }
     .card {
-      background: rgba(255,255,255,0.03);
+      background: rgba(40, 40, 55, 0.85);
       backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #f0f0f0;
     }
     .nav-btn.active {
-      background: rgba(99,102,241,0.2);
+      background: rgba(99,102,241,0.3);
       border-color: #6366f1;
     }
-    input, select {
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: white;
+    input, select, textarea {
+      background: rgba(10, 10, 15, 0.9);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #ffffff !important;
     }
-    input:focus, select:focus {
+    input:focus, select:focus, textarea:focus {
       border-color: #6366f1;
       outline: none;
+    }
+    input::placeholder, textarea::placeholder {
+      color: rgba(255,255,255,0.4) !important;
     }
     ::-webkit-scrollbar {
       width: 8px;
@@ -60,8 +65,28 @@
       background: rgba(255,255,255,0.05);
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.25);
       border-radius: 4px;
+    }
+    /* Memory editor specific styling */
+    #memoryEditor {
+      color: #ffffff !important;
+      background: rgba(10, 10, 15, 0.95) !important;
+      border: 1px solid rgba(255,255,255,0.25) !important;
+    }
+    #memoryEditor:focus {
+      border-color: #6366f1 !important;
+      box-shadow: 0 0 0 2px rgba(99,102,241,0.3) !important;
+    }
+    /* Better text visibility */
+    .text-gray-400 {
+      color: #b0b0b0 !important;
+    }
+    .text-gray-300 {
+      color: #c0c0c0 !important;
+    }
+    .text-gray-500 {
+      color: #909090 !important;
     }
   </style>
 </head>
@@ -149,7 +174,7 @@
           <h2 class="text-xl font-bold">🧠 Memory</h2>
           <button onclick="saveMemory()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">Save Changes</button>
         </div>
-        <textarea id="memoryEditor" class="w-full h-96 p-4 rounded-lg text-sm text-white bg-black/30 border border-white/10 focus:border-indigo-500 outline-none"></textarea>
+        <textarea id="memoryEditor" class="w-full h-96 p-4 rounded-lg text-sm" style="color: #ffffff !important; background: rgba(10, 10, 15, 0.95) !important; border: 1px solid rgba(255,255,255,0.2) !important;"></textarea>
       </section>
 
       <!-- Memories Section (Self-Organizing) -->
@@ -454,7 +479,7 @@
       const content = prompt('Enter memory content:');
       if (!content) return;
 
-      // Ask for category
+      // Ask for category with numbered list
       const catOptions = MEMORY_CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
       const catInput = prompt(`Select category number:\n\n${catOptions}`);
 
