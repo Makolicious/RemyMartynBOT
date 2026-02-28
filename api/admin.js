@@ -130,9 +130,9 @@ module.exports = async (req, res) => {
     // ── GET /memory ──────────────────────────────────────────────────
     if (path === '/memory' && req.method === 'GET') {
       const memory = await db.get(MEMORY_KEY);
-      const formatted = formatMemoryForTelegram(memory || 'No memory yet.');
+      // Return raw memory for editing (formatted version is read-only display)
       return jsonResponse(res, {
-        memory: formatted,
+        memory: memory || '',
         length: memory?.length || 0,
       });
     }
