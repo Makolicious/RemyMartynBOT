@@ -56,7 +56,8 @@ async function addMemory(content, category, confidence = 80) {
     last_accessed: memory.last_accessed,
     access_count: memory.access_count,
     decay_rate: memory.decay_rate,
-    related_ids: JSON.stringify(memory.related_ids)
+    related_ids: JSON.stringify(memory.related_ids),
+    pinned: memory.pinned ? 'true' : 'false'  // Store pinned status
   });
 
   // Add to importance-sorted set
@@ -97,7 +98,8 @@ async function getMemory(id, boost = true) {
     last_accessed: parseInt(data.last_accessed),
     access_count: parseInt(data.access_count),
     decay_rate: parseFloat(data.decay_rate),
-    related_ids: JSON.parse(data.related_ids || '[]')
+    related_ids: JSON.parse(data.related_ids || '[]'),
+    pinned: data.pinned === 'true' || data.pinned === true  // Parse pinned boolean
   };
 
   // Boost on access if requested
@@ -234,7 +236,8 @@ async function updateMemory(id, updates) {
     last_accessed: updated.last_accessed,
     access_count: updated.access_count,
     decay_rate: updated.decay_rate,
-    related_ids: JSON.stringify(updated.related_ids)
+    related_ids: JSON.stringify(updated.related_ids),
+    pinned: updated.pinned ? 'true' : 'false'  // Store pinned status
   });
 
   // Update sorted set if importance changed
@@ -293,9 +296,12 @@ async function applyDecay() {
     const id = entries[i];
     const currentImportance = parseFloat(entries[i + 1]);
 
-    // Get memory to get its decay rate
+    // Get memory to get its decay rate and pinned status
     const mem = await getMemory(id, false);
     if (!mem) continue;
+
+    // Skip pinned memories - they don't decay
+    if (mem.pinned) continue;
 
     // Apply decay: importance * (decay_rate ^ days)
     const newImportance = currentImportance * Math.pow(mem.decay_rate, daysPassed);

@@ -337,14 +337,14 @@ module.exports = async (req, res) => {
     // ── POST /memories/add — add a new memory entry ───────────────────
     if (path === '/memories/add' && req.method === 'POST') {
       const body = req.body || {};
-      const { content, category, confidence } = body;
+      const { content, category, confidence, pinned } = body;
 
       if (!content || !category) {
         return jsonResponse(res, { error: 'content and category required' }, 400);
       }
 
       try {
-        const newMemory = await memory.addMemory(content, category, confidence);
+        const newMemory = await memory.addMemory(content, category, confidence, pinned);
         return jsonResponse(res, { success: true, memory: newMemory });
       } catch (err) {
         return jsonResponse(res, { error: err.message }, 500);

@@ -412,10 +412,14 @@
           list.innerHTML = data.memories.map(m => {
             const importanceColor = m.importance > 70 ? 'text-green-400' : m.importance > 40 ? 'text-yellow-400' : 'text-red-400';
             const confidenceBar = `<div class="w-full bg-gray-700 rounded-full h-1.5 mt-2"><div class="bg-blue-400 h-1.5 rounded-full" style="width: ${m.confidence}%"></div></div>`;
+            const pinIcon = m.pinned ? '<span class="text-yellow-400" title="Pinned - no decay">📌</span>' : '';
             return `
-              <div class="card rounded-lg p-3">
+              <div class="card rounded-lg p-3 ${m.pinned ? 'border-yellow-500/30 border-2' : ''}">
                 <div class="flex justify-between items-start mb-2">
-                  <span class="text-xs px-2 py-1 rounded bg-indigo-500/20 text-indigo-300">${m.category}</span>
+                  <div class="flex items-center gap-2">
+                    ${pinIcon}
+                    <span class="text-xs px-2 py-1 rounded bg-indigo-500/20 text-indigo-300">${m.category}</span>
+                  </div>
                   <div class="flex gap-3 text-xs">
                     <span class="${importanceColor}">⚡ ${m.importance.toFixed(0)}</span>
                     <span class="text-gray-400">📝 ${m.access_count}</span>

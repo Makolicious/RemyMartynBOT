@@ -82,7 +82,7 @@ function generateId() {
 /**
  * Create a new memory entry
  */
-function createMemory(content, category, confidence = 80) {
+function createMemory(content, category, confidence = 80, pinned = false) {
   const id = generateId();
   const now = Date.now();
 
@@ -96,7 +96,8 @@ function createMemory(content, category, confidence = 80) {
     last_accessed: now,
     access_count: 0,
     decay_rate: DEFAULT_DECAY_RATES[category] || 0.95,
-    related_ids: []
+    related_ids: [],
+    pinned: pinned  // AI can mark important facts as permanent (no decay)
   };
 }
 
