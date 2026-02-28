@@ -186,6 +186,7 @@
               <option value="">All Categories</option>
             </select>
             <button onclick="triggerDecay()" class="bg-yellow-500 hover:bg-yellow-600 px-3 py-2 rounded-lg text-sm">⏱️ Decay</button>
+            <button onclick="migrateLegacyMemories()" class="bg-purple-500 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm">📥 Migrate</button>
             <button onclick="addMemoryDialog()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">+ Add</button>
           </div>
         </div>
@@ -521,6 +522,21 @@
       if (data?.success) {
         showToast(`Decay applied to ${data.decayed} memories`);
         loadMemories();
+      }
+    }
+
+    async function migrateLegacyMemories() {
+      if (!confirm('Migrate legacy Memory tables to new Self-Organizing Memories? This will parse the old markdown tables and create structured entries.')) return;
+
+      showToast('Starting migration...', 'info');
+
+      const data = await apiCall('/memories/migrate', { method: 'POST' });
+      if (data?.success) {
+        showToast(`Migrated ${data.migrated} memories from ${data.tables} tables!`);
+        loadMemories();
+        loadMemoriesStats();
+      } else {
+        showToast(data.message || 'Migration failed', 'error');
       }
     }
 

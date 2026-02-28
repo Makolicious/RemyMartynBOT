@@ -390,6 +390,95 @@ module.exports = async (req, res) => {
       return jsonResponse(res, { success: true, pruned });
     }
 
+    // ── POST /memories/migrate — migrate legacy memory to new system ──
+    if (path === '/memories/migrate' && req.method === 'POST') {
+      const { parseTables } = require('./utils/formatter');
+      const LEGACY_MEMORY_KEY = 'remy_memory';
+
+      const legacyMemory = await db.get(LEGACY_MEMORY_KEY);
+
+      if (!legacyMemory) {
+        return jsonResponse(res, {
+          success: false,
+          message: 'No legacy memory found to migrate'
+        });
+      }
+
+      // Get existing memories for deduplication
+      const existingMemories = await memory.getMemoriesByCategory('', 100);
+      const existingKeys = new Set(
+        existingMemories.map(m => `${m.category}:${m.content.toLowerCase().slice(0, 30)}`)
+      );
+
+      // Parse markdown tables
+      const tables = parseTables(legacyMemory);
+
+      let totalMigrated = 0;
+      let skipped = 0;
+      const results = [];
+
+      for (const table of tables) {
+        const category = table.title;
+
+        // Skip if category doesn't exist
+        if (!memory.CATEGORIES.includes(category)) {
+          skipped++;
+          continue;
+        }
+
+        let categoryMigrated = 0;
+
+        for (const row of table.rows) {
+          const content = row[0] || row.join(' ').trim();
+
+          // Skip empty or placeholder rows
+          if (!content ||
+              content.match(/^(-+|\[.+\]|---|N\/A|Empty|None|\s+)$/i) ||
+              content.length < 5) {
+            skipped++;
+            continue;
+          }
+
+          // Remove timestamps and clean
+          const cleanContent = content.replace(/\[\d{4}-\d{2}-\d{2}\]\s*/g, '').trim();
+
+          if (cleanContent.length < 5) {
+            skipped++;
+            continue;
+          }
+
+          // Check for duplicates
+          const key = `${category}:${cleanContent.toLowerCase().slice(0, 30)}`;
+          if (existingKeys.has(key)) {
+            skipped++;
+            continue;
+          }
+
+          try {
+            await memory.addMemory(cleanContent, category, 85);
+            existingKeys.add(key);
+            totalMigrated++;
+            categoryMigrated++;
+          } catch (err) {
+            console.error('[MIGRATE] Error:', err.message);
+            skipped++;
+          }
+        }
+
+        if (categoryMigrated > 0) {
+          results.push({ category, migrated: categoryMigrated });
+        }
+      }
+
+      return jsonResponse(res, {
+        success: true,
+        migrated: totalMigrated,
+        skipped,
+        tables: tables.length,
+        results
+      });
+    }
+
     // ── Unknown endpoint ─────────────────────────────────────────────
     return jsonResponse(res, { error: 'Not found', path }, 404);
 
