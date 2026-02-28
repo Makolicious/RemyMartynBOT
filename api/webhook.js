@@ -1587,6 +1587,66 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
           console.error('Memory update failed:', err.message);
         }
       }).catch(() => {});
+
+    // ── Self-Organizing Memory (automatic fact extraction) ──────
+    // Extract facts from conversation and store in new system (runs in parallel)
+    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
+      (async () => {
+        try {
+          // Get existing memories for deduplication
+          const existingMemories = await memory.getMemoriesByCategory('', 50);
+
+          // Extract structured facts from the conversation
+          const { text: extractionResult } = await generateText({
+            model: UTILITY_MODEL,
+            prompt: `Extract facts about the user from this conversation. Return as JSON array.
+
+CONVERSATION:
+User: ${senderName}
+Message: ${histContent}
+Remy: ${aiResponse}
+
+CATEGORIES TO USE: ${memory.CATEGORIES.slice(0, 12).join(', ')}
+
+RULES:
+- Extract meaningful facts about the user
+- Each fact should be a single concise statement
+- Assign appropriate category from the list
+- Skip trivial exchanges (hi, thanks, etc)
+- Return ONLY JSON array, nothing else
+
+Response format:
+[
+  {"content": "User's full name", "category": "Boss Profile"},
+  {"content": "Main career goal for 2024", "category": "Goals & Aspirations"}
+]`,
+          });
+
+          const facts = JSON.parse(extractionResult);
+
+          if (facts && facts.length > 0) {
+            let addedCount = 0;
+            for (const fact of facts) {
+              if (fact.content && fact.category) {
+                // Check for duplicates (similar content in same category)
+                const isDuplicate = existingMemories.some(m =>
+                  m.category === fact.category &&
+                  m.content.toLowerCase().includes(fact.content.toLowerCase().slice(0, 20))
+                );
+
+                if (!isDuplicate) {
+                  await memory.addMemory(fact.content, fact.category, 85); // auto-pins based on category
+                  addedCount++;
+                }
+              }
+            }
+            console.log(`[AUTO-MEMORY] Extracted ${addedCount} new facts from conversation`);
+          }
+        } catch (err) {
+          console.error('[AUTO-MEMORY] Extraction failed:', err.message);
+        }
+      })();
+    }
     }
 
     console.log('[DONE] Response sent, returning 200');
