@@ -1,5 +1,6 @@
 const Redis = require('ioredis');
 const { formatMemoryForTelegram } = require('./utils/formatter');
+const memory = require('./memory');  // Self-organizing memory system
 
 // ── Admin Authentication ─────────────────────────────────────────────────────
 
@@ -302,6 +303,91 @@ module.exports = async (req, res) => {
       }
 
       return jsonResponse(res, { error: 'Invalid action (use "add" or "remove")' }, 400);
+    }
+
+    // ── GET /memories — list all memories with optional filters ───────
+    if (path === '/memories' && req.method === 'GET') {
+      const query = req.query || {};
+      const category = query.category;
+
+      let memories;
+      if (category) {
+        memories = await memory.getMemoriesByCategory(category, 100);
+      } else {
+        // Get memories from all categories
+        const allCategories = memory.CATEGORIES;
+        memories = [];
+        for (const cat of allCategories) {
+          const catMemories = await memory.getMemoriesByCategory(cat, 10);
+          memories.push(...catMemories);
+        }
+        // Sort by importance
+        memories.sort((a, b) => b.importance - a.importance);
+      }
+
+      return jsonResponse(res, { memories, total: memories.length });
+    }
+
+    // ── GET /memories/stats — memory system statistics ─────────────────
+    if (path === '/memories/stats' && req.method === 'GET') {
+      const stats = await memory.getStats();
+      return jsonResponse(res, { stats });
+    }
+
+    // ── POST /memories/add — add a new memory entry ───────────────────
+    if (path === '/memories/add' && req.method === 'POST') {
+      const body = req.body || {};
+      const { content, category, confidence } = body;
+
+      if (!content || !category) {
+        return jsonResponse(res, { error: 'content and category required' }, 400);
+      }
+
+      try {
+        const newMemory = await memory.addMemory(content, category, confidence);
+        return jsonResponse(res, { success: true, memory: newMemory });
+      } catch (err) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    // ── PUT /memories/:id — update a memory entry ───────────────────
+    if (path.startsWith('/memories/') && req.method === 'PUT' && !path.endsWith('/add')) {
+      const id = path.split('/')[2];
+      const body = req.body || {};
+
+      try {
+        const updated = await memory.updateMemory(id, body);
+        return jsonResponse(res, { success: true, memory: updated });
+      } catch (err) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    // ── DELETE /memories/:id — delete a memory entry ───────────────
+    if (path.startsWith('/memories/') && req.method === 'DELETE') {
+      const id = path.split('/')[2];
+      const deleted = await memory.deleteMemory(id);
+
+      return jsonResponse(res, {
+        success: deleted,
+        message: deleted ? 'Memory deleted' : 'Memory not found'
+      });
+    }
+
+    // ── POST /memories/decay — trigger time decay ─────────────────────
+    if (path === '/memories/decay' && req.method === 'POST') {
+      const result = await memory.applyDecay();
+      return jsonResponse(res, { success: true, ...result });
+    }
+
+    // ── POST /memories/prune — prune low-importance memories ───────────
+    if (path === '/memories/prune' && req.method === 'POST') {
+      const body = req.body || {};
+      const threshold = body.threshold || 10;
+
+      const pruned = await memory.pruneMemories(threshold);
+      return jsonResponse(res, { success: true, pruned });
     }
 
     // ── Unknown endpoint ─────────────────────────────────────────────

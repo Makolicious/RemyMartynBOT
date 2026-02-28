@@ -6,6 +6,7 @@ const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 const { formatMemoryForTelegram } = require('./utils/formatter');
+const memory = require('./memory');  // Self-organizing memory system
 
 // ── Validate required env vars on cold start ──────────────────────────────────
 const REQUIRED_ENV = ['TELEGRAM_TOKEN', 'MY_TELEGRAM_ID', 'REDIS_URL', 'ZHIPU_API_KEY'];
@@ -877,6 +878,93 @@ module.exports = async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // ── Self-Organizing Memory Commands ────────────────────────────────────
+
+      // /memadd <content> <category>
+      if (text.startsWith('/memadd ')) {
+        const args = text.slice(8).trim();
+        // Extract category (last word) and content (rest)
+        const lastSpace = args.lastIndexOf(' ');
+        if (lastSpace === -1) {
+          await bot.sendMessage(chatId, '⚠️ Usage: `/memadd <content> <category>`\n\nCategories: ' + memory.CATEGORIES.slice(0, 5).join(', ') + '...', { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const content = args.slice(0, lastSpace);
+        const category = args.slice(lastSpace + 1);
+        try {
+          await memory.addMemory(content, category);
+          await bot.sendMessage(chatId, `✅ Memory added to *${category}*`, { parse_mode: 'Markdown' });
+        } catch (err) {
+          await bot.sendMessage(chatId, `❌ Error: ${err.message}`);
+        }
+        return res.status(200).send('OK');
+      }
+
+      // /memcat <category> - view memories by category
+      if (text.startsWith('/memcat ')) {
+        const category = text.slice(8).trim();
+        const memories = await memory.getMemoriesByCategory(category, 10);
+        if (memories.length === 0) {
+          await bot.sendMessage(chatId, `📂 No memories in *${category}*`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const output = memories.map(m =>
+          `• ${m.content}\n  _Importance: ${m.importance.toFixed(0)} | Confidence: ${m.confidence}_`
+        ).join('\n\n');
+        await safeSend(chatId, `📂 *${category}* (${memories.length}):\n\n${output}`);
+        return res.status(200).send('OK');
+      }
+
+      // /memsearch <query>
+      if (text.startsWith('/memsearch ')) {
+        const query = text.slice(11).trim();
+        const results = await memory.searchMemories(query, 10);
+        if (results.length === 0) {
+          await bot.sendMessage(chatId, `🔍 No results for "${query}"`);
+          return res.status(200).send('OK');
+        }
+        const output = results.map(m =>
+          `• [${m.category}] ${m.content}\n  _Importance: ${m.importance.toFixed(0)}_`
+        ).join('\n\n');
+        await safeSend(chatId, `🔍 *${results.length} results* for "${query}":\n\n${output}`);
+        return res.status(200).send('OK');
+      }
+
+      // /memstats
+      if (text === '/memstats') {
+        const stats = await memory.getStats();
+        const topCats = Object.entries(stats.categories || {})
+          .filter(([, count]) => count > 0)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+
+        await bot.sendMessage(chatId,
+          `📊 *Memory Stats*\n\n` +
+          `🧠 Total memories: *${stats.totalMemories}*\n` +
+          `🔥 Hot (recently accessed): *${stats.hotMemories}*\n` +
+          `📝 Total accesses: *${stats.total_accesses || 0}*\n\n` +
+          `📂 Top categories:\n${topCats.map(([cat, count]) => `• ${cat}: ${count}`).join('\n')}`,
+          { parse_mode: 'Markdown' }
+        );
+        return res.status(200).send('OK');
+      }
+
+      // /memdecay - manually trigger decay
+      if (text === '/memdecay') {
+        await bot.sendMessage(chatId, '⏳ Applying time decay...');
+        const result = await memory.applyDecay();
+        await bot.sendMessage(chatId, `✅ Decay applied to *${result.decayed}* memories (${result.daysPassed} day(s))`, { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      }
+
+      // /memexport - export to markdown
+      if (text === '/memexport') {
+        await bot.sendMessage(chatId, '⏳ Exporting memory...');
+        const markdown = await memory.exportAsMarkdown();
+        await safeSend(chatId, `📋 *Memory Export:*\n\n${markdown}`);
+        return res.status(200).send('OK');
+      }
+
       // ── /stats ────────────────────────────────────────────────────────────
       if (text === '/stats') {
         const [logLen, memStr, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
@@ -1095,10 +1183,20 @@ module.exports = async (req, res) => {
           `\`/allow <id>\` — grant group access\n` +
           `\`/remove <id>\` or \`/revoke <id>\` — revoke\n` +
           `\`/status\` or \`/list\` — approved users & groups\n\n` +
-          `*Memory*\n` +
-          `\`/memory\` — view memory\n` +
-          `\`/clearmemory\` — wipe memory\n` +
-          `\`/rebuildmemory\` — rebuild from log\n\n` +
+          `*Memory (Self-Organizing)*\n` +
+          `\`/memadd <content> <category>\` — add memory\n` +
+          `\`/memcat <category>\` — view memories by category\n` +
+          `\`/memsearch <query>\` — search all memories\n` +
+          `\`/memstats\` — view memory statistics\n` +
+          `\`/memdecay\` — apply time decay to all memories\n` +
+          `\`/memexport\` — export memories as markdown\n\n` +
+          `*Memory (Legacy)*\n` +
+          `\`/memory\` — view legacy memory\n` +
+          `\`/clearmemory\` — wipe legacy memory\n` +
+          `\`/rebuildmemory\` — rebuild legacy memory from log\n\n` +
+          `*Agent*\n` +
+          `\`/agent plan <goal>\` — generate structured plan\n` +
+          `\`/agent help\` — agent commands\n\n` +
           `*Notes*\n` +
           `\`/note <text>\` — save a note\n` +
           `\`/notes\` — view notes (last 20)\n` +

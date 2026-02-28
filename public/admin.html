@@ -101,6 +101,7 @@
       <div class="flex gap-2 overflow-x-auto pb-2 mb-6">
         <button onclick="showSection('stats')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="stats">📊 Stats</button>
         <button onclick="showSection('memory')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="memory">🧠 Memory</button>
+        <button onclick="showSection('memories')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="memories">🔮 Memories</button>
         <button onclick="showSection('notes')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
         <button onclick="showSection('reminders')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="reminders">⏰ Reminders</button>
         <button onclick="showSection('log')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
@@ -149,6 +150,28 @@
           <button onclick="saveMemory()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">Save Changes</button>
         </div>
         <textarea id="memoryEditor" class="w-full h-96 p-4 rounded-lg text-sm text-white bg-black/30 border border-white/10 focus:border-indigo-500 outline-none"></textarea>
+      </section>
+
+      <!-- Memories Section (Self-Organizing) -->
+      <section id="section-memories" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">🔮 Self-Organizing Memories</h2>
+          <div class="flex gap-2">
+            <select id="memCategoryFilter" onchange="loadMemories()" class="px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white">
+              <option value="">All Categories</option>
+            </select>
+            <button onclick="triggerDecay()" class="bg-yellow-500 hover:bg-yellow-600 px-3 py-2 rounded-lg text-sm">⏱️ Decay</button>
+            <button onclick="addMemoryDialog()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">+ Add</button>
+          </div>
+        </div>
+        <div id="memoriesStats" class="card rounded-lg p-3 mb-4 text-sm">
+          <div class="flex gap-4">
+            <span>🧠 Total: <strong id="memTotalCount">-</strong></span>
+            <span>🔥 Hot: <strong id="memHotCount">-</strong></span>
+            <span>📝 Accesses: <strong id="memAccessCount">-</strong></span>
+          </div>
+        </div>
+        <div id="memoriesList" class="space-y-2"></div>
       </section>
 
       <!-- Notes Section -->
@@ -270,6 +293,7 @@
       switch(section) {
         case 'stats': loadStats(); break;
         case 'memory': loadMemory(); break;
+        case 'memories': loadMemories(); break;
         case 'notes': loadNotes(); break;
         case 'reminders': loadReminders(); break;
         case 'log': loadLog(); break;
@@ -348,6 +372,126 @@
       });
       if (data?.success) {
         showToast('Memory saved!');
+      }
+    }
+
+    // ── Memories (Self-Organizing) ────────────────────────────────────
+    const MEMORY_CATEGORIES = [
+      'Boss Profile', 'Personality & Traits', 'Goals & Aspirations',
+      'Habits & Routines', 'Skills & Expertise', 'Friends & Contacts',
+      'Family Members', 'Business Associates', 'Active Projects',
+      'Business Ideas & Ventures', 'Food & Drink Preferences',
+      'Technology & Tools', 'Entertainment Preferences',
+      'Work Style & Environment', 'Communication Style',
+      'Travel & Places', 'Key Dates & Milestones',
+      'Decisions & Commitments', 'Pending Action Items',
+      'Notes & Miscellaneous'
+    ];
+
+    async function loadMemories() {
+      // Populate category filter
+      const filter = document.getElementById('memCategoryFilter');
+      if (filter.options.length <= 1) {
+        MEMORY_CATEGORIES.forEach(cat => {
+          const opt = document.createElement('option');
+          opt.value = cat;
+          opt.textContent = cat;
+          filter.appendChild(opt);
+        });
+      }
+
+      // Load memories
+      const category = filter.value;
+      const data = await apiCall(`/memories${category ? '?category=' + encodeURIComponent(category) : ''}`);
+
+      if (data) {
+        const list = document.getElementById('memoriesList');
+        if (data.memories.length === 0) {
+          list.innerHTML = '<p class="text-gray-400 text-center py-8">No memories yet</p>';
+        } else {
+          list.innerHTML = data.memories.map(m => {
+            const importanceColor = m.importance > 70 ? 'text-green-400' : m.importance > 40 ? 'text-yellow-400' : 'text-red-400';
+            const confidenceBar = `<div class="w-full bg-gray-700 rounded-full h-1.5 mt-2"><div class="bg-blue-400 h-1.5 rounded-full" style="width: ${m.confidence}%"></div></div>`;
+            return `
+              <div class="card rounded-lg p-3">
+                <div class="flex justify-between items-start mb-2">
+                  <span class="text-xs px-2 py-1 rounded bg-indigo-500/20 text-indigo-300">${m.category}</span>
+                  <div class="flex gap-3 text-xs">
+                    <span class="${importanceColor}">⚡ ${m.importance.toFixed(0)}</span>
+                    <span class="text-gray-400">📝 ${m.access_count}</span>
+                  </div>
+                </div>
+                <p class="text-sm mb-2">${m.content}</p>
+                ${confidenceBar}
+                <div class="flex justify-between items-center mt-2 text-xs text-gray-500">
+                  <span>Created: ${new Date(m.created_at).toLocaleDateString()}</span>
+                  <button onclick="deleteMemory('${m.id}')" class="text-red-400 hover:text-red-300">Delete</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      // Load stats
+      loadMemoriesStats();
+    }
+
+    async function loadMemoriesStats() {
+      const data = await apiCall('/memories/stats');
+      if (data?.stats) {
+        document.getElementById('memTotalCount').textContent = data.stats.totalMemories || 0;
+        document.getElementById('memHotCount').textContent = data.stats.hotMemories || 0;
+        document.getElementById('memAccessCount').textContent = data.stats.total_accesses || 0;
+      }
+    }
+
+    async function addMemoryDialog() {
+      const content = prompt('Enter memory content:');
+      if (!content) return;
+
+      // Ask for category
+      const catOptions = MEMORY_CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
+      const catInput = prompt(`Select category number:\n\n${catOptions}`);
+
+      if (!catInput) return;
+      const catIndex = parseInt(catInput) - 1;
+
+      if (catIndex < 0 || catIndex >= MEMORY_CATEGORIES.length) {
+        showToast('Invalid category', 'error');
+        return;
+      }
+
+      const category = MEMORY_CATEGORIES[catIndex];
+
+      const data = await apiCall('/memories/add', {
+        method: 'POST',
+        body: JSON.stringify({ content, category, confidence: 85 })
+      });
+
+      if (data?.success) {
+        showToast('Memory added!');
+        loadMemories();
+      }
+    }
+
+    async function deleteMemory(id) {
+      if (!confirm('Delete this memory?')) return;
+
+      const data = await apiCall(`/memories/${id}`, { method: 'DELETE' });
+      if (data?.success) {
+        showToast('Memory deleted');
+        loadMemories();
+      }
+    }
+
+    async function triggerDecay() {
+      if (!confirm('Apply time decay to all memories? This will reduce importance scores based on age.')) return;
+
+      const data = await apiCall('/memories/decay', { method: 'POST' });
+      if (data?.success) {
+        showToast(`Decay applied to ${data.decayed} memories`);
+        loadMemories();
       }
     }
 
