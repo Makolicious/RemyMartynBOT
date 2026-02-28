@@ -85,6 +85,24 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
+  // ── GET /debug/legacy — debug legacy memory (no auth) ──────────
+  if (path === '/debug/legacy' && req.method === 'GET') {
+    const { parseTables } = require('./utils/formatter');
+    const db = getRedis();
+    await db.connect().catch(() => {});
+
+    const legacyMemory = await db.get(MEMORY_KEY);
+
+    const tables = parseTables(legacyMemory || '');
+
+    return jsonResponse(res, {
+      legacyMemoryLength: legacyMemory?.length || 0,
+      tablesCount: tables.length,
+      tableTitles: tables.map(t => t.title),
+      sampleRows: tables.map(t => ({ title: t.title, rowCount: t.rows.length, firstRow: t.rows[0] }))
+    });
+  }
+
   // ── GET /auth — no Redis needed ────────────────────────────────────
   if (path === '/auth' && req.method === 'GET') {
     if (isAdmin(req)) {
@@ -135,21 +153,6 @@ module.exports = async (req, res) => {
       return jsonResponse(res, {
         memory: memory || '',
         length: memory?.length || 0,
-      });
-    }
-
-    // ── GET /debug/legacy — debug legacy memory parsing ────────────────
-    if (path === '/debug/legacy' && req.method === 'GET') {
-      const { parseTables } = require('./utils/formatter');
-      const legacyMemory = await db.get(MEMORY_KEY);
-
-      const tables = parseTables(legacyMemory || '');
-
-      return jsonResponse(res, {
-        legacyMemoryLength: legacyMemory?.length || 0,
-        tablesCount: tables.length,
-        tableTitles: tables.map(t => t.title),
-        sampleRows: tables.map(t => ({ title: t.title, rowCount: t.rows.length, firstRow: t.rows[0] }))
       });
     }
 
