@@ -5,6 +5,7 @@ const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
+const { formatMemoryForTelegram } = require('./utils/formatter');
 
 // ── Validate required env vars on cold start ──────────────────────────────────
 const REQUIRED_ENV = ['TELEGRAM_TOKEN', 'MY_TELEGRAM_ID', 'REDIS_URL', 'ZHIPU_API_KEY'];
@@ -50,59 +51,126 @@ const BOSS_NAME    = process.env.BOSS_NAME     || 'Mako';
 const BOSS_ALIASES = process.env.BOSS_ALIASES  || '';
 const SERPER_KEY   = process.env.SERPER_API_KEY || '';
 
-// ── Structured memory template ────────────────────────────────────────────────
-const EMPTY_MEMORY = `## Boss Profile
-### Identity
-### Personality & Traits
-### Goals & Aspirations
-### Habits & Routines
-### Skills & Expertise
+// ── Structured memory template (20 table-based categories) ──────────────────
+const EMPTY_MEMORY = `# Remy's Memory Tables
 
-## People
-### Friends & Close Contacts
-### Family
-### Colleagues & Business Associates
-### Other Notable Individuals
+## 1. Boss Profile
+| Field | Value |
+|-------|-------|
+| Name | [Name] |
+| Location | [City/Country] |
+| Role/Title | [Position] |
+| Birthday | [Date] |
 
-## Relationships
-### Key Dynamics
-### Trust & Loyalty Notes
+## 2. Personality & Traits
+| Trait | Description | Intensity |
+|-------|-------------|-----------|
+| [Trait] | [Details] | [High/Med/Low] |
 
-## Projects & Work
-### Active Projects
-### Business Ideas & Ventures
-### Completed Projects
-### Goals & Targets
+## 3. Goals & Aspirations
+| Goal | Category | Priority | Status |
+|------|----------|----------|--------|
+| [Goal description] | [Work/Personal/Health] | [P1/P2/P3] | [Active/On Hold] |
 
-## Preferences
-### Food & Drink
-### Technology & Tools
-### Entertainment & Media
-### Work Style & Environment
-### Communication Style
-### Travel & Places
+## 4. Habits & Routines
+| Habit | Frequency | Time | Notes |
+|-------|-----------|------|-------|
+| [Daily habit] | Daily | [Time] | [Details] |
+| [Weekly habit] | Weekly | [Day] | [Details] |
 
-## Important Facts & Dates
-### Personal Milestones
-### Key Dates & Anniversaries
-### Locations (Home, Work, etc.)
+## 5. Skills & Expertise
+| Skill | Level | Experience | Last Used |
+|-------|-------|------------|-----------|
+| [Skill name] | [Expert/Advanced/Intermediate] | [Years] | [Context] |
 
-## Decisions & Commitments
-### Decisions Made
-### Promises & Commitments
-### Pending Action Items
+## 6. Friends & Contacts
+| Name | Relationship | Last Contact | Key Info |
+|------|--------------|--------------|----------|
+| [Name] | [Friend/Colleague] | [Date/Time] | [Important notes] |
 
-## Conversation Topics & Opinions
-### Recurring Themes
-### Strong Opinions & Beliefs
-### Ongoing Debates or Discussions
+## 7. Family Members
+| Name | Relation | Birthday/Key Dates | Notes |
+|------|----------|-------------------|-------|
+| [Name] | [Relation] | [Date] | [Details] |
 
-## Timeline & Events
-### Recent Events
-### Upcoming Events
-### Historical Events Worth Remembering
+## 8. Business Associates
+| Name | Role | Company/Context | Relationship Status |
+|------|------|-----------------|---------------------|
+| [Name] | [Role] | [Company] | [Status] |
 
-## Notes & Miscellaneous`;
+## 9. Active Projects
+| Project | Phase | Deadline | Progress | Notes |
+|----------|-------|----------|----------|-------|
+| [Name] | [Planning/Execution/Done] | [Date] | [%] | [Details] |
+
+## 10. Business Ideas & Ventures
+| Idea | Status | Potential | Next Steps |
+|------|--------|-----------|------------|
+| [Description] | [Idea/Planning/Active] | [High/Med/Low] | [Action items] |
+
+## 11. Food & Drink Preferences
+| Item | Type | Preference | Notes |
+|------|------|------------|-------|
+| [Food/Drink] | [Cuisine/Category] | [Love/Like/Dislike] | [Details] |
+
+## 12. Technology & Tools
+| Tool/Service | Purpose | Proficiency | Notes |
+|--------------|--------|-------------|-------|
+| [Name] | [Usage] | [Expert/Comfortable/Learning] | [Details] |
+
+## 13. Entertainment Preferences
+| Category | Favorites | Dislikes | Notes |
+|----------|-----------|----------|-------|
+| [Movies/Music/Games] | [List] | [List] | [Details] |
+
+## 14. Work Style & Environment
+| Aspect | Preference | Current State |
+|--------|------------|---------------|
+| [Deep work/Meetings/etc.] | [Preference] | [Current setup] |
+
+## 15. Communication Style
+| Channel | Preference | Response Time | Notes |
+|----------|------------|---------------|-------|
+| [Telegram/Email/etc.] | [Preferred/OK/Avoid] | [Typical] | [Details] |
+
+## 16. Travel & Places
+| Location | Type | Visited? | Notes |
+|----------|------|----------|-------|
+| [City/Country] | [Home/Work/Favorite/Visited] | [Yes/No/Soon] | [Details] |
+
+## 17. Key Dates & Milestones
+| Date | Event | Type | Reminder Set? |
+|------|-------|------|---------------|
+| [Date] | [Description] | [Personal/Work/Family] | [Yes/No] |
+
+## 18. Decisions & Commitments
+| Decision | Date | Status | Notes |
+|----------|------|--------|-------|
+| [Description] | [Made] | [Active/Completed/Cancelled] | [Details] |
+
+## 19. Pending Action Items
+| Task | Priority | Due Date | Status |
+|------|----------|----------|--------|
+| [Description] | [P1/P2/P3] | [Date] | [Not Started/In Progress] |
+
+## 20. Notes & Miscellaneous
+| Category | Entry | Date |
+|----------|-------|------|
+| [Category] | [Note content] | [Date] |`;
+
+const PLANNER_SYSTEM = `You are a planning agent for Remy.
+
+Break down user goals into 3-7 clear, actionable steps.
+Use memory for context about projects, goals, preferences.
+
+Return ONLY JSON:
+{
+  "title": "Short title",
+  "steps": [
+    { "id":1, "action": "Specific action", "estimatedTime": "15min" }
+  ],
+  "notes": "Optional advice"
+}`;
 
 // ── Inline Keyboard Menu ──────────────────────────────────────────────────────
 const MAIN_MENU_KEYBOARD = {
@@ -200,6 +268,66 @@ function parseReminderTime(text) {
   const msg    = match[3].trim();
   const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
   return { ts: Date.now() + amount * ms, message: msg };
+}
+
+// Format plan for Telegram display
+function formatPlanForTelegram(plan) {
+  let msg = `📋 *${plan.title}*\n\n`;
+
+  plan.steps.forEach(step => {
+    msg += `${step.id}. ${step.action} (${step.estimatedTime})\n`;
+  });
+
+  if (plan.notes) {
+    msg += `\n💡 ${plan.notes}`;
+  }
+
+  return msg;
+}
+
+// Call planner - inline implementation to avoid network call
+async function planGoal(goal, userId) {
+  const memory = await redis.get(MEMORY_KEY) || EMPTY_MEMORY;
+  const timezone = await redis.get(TIMEZONE_KEY) || 'UTC';
+  const currentDate = new Date().toISOString().split('T')[0];
+
+  const prompt = `Goal: ${goal}
+
+Context:
+- Current Date: ${currentDate}
+- Timezone: ${timezone}
+
+Memory:
+${memory || 'No memory available yet.'}
+
+Generate a plan to achieve this goal. Return ONLY valid JSON with title, steps array (each with id, action, estimatedTime), and optional notes. 3-7 steps max.`;
+
+  const result = await generateText({
+    model: CHAT_MODEL,
+    system: PLANNER_SYSTEM,
+    prompt,
+    temperature: 0.7,
+    maxTokens: 800,
+  });
+
+  const jsonMatch = result.text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('No JSON found in response');
+  }
+
+  const plan = JSON.parse(jsonMatch[0]);
+
+  if (!plan.title || !plan.steps || !Array.isArray(plan.steps)) {
+    throw new Error('Invalid plan structure');
+  }
+
+  plan.steps = plan.steps.map((step, idx) => ({
+    id: step.id || idx + 1,
+    action: step.action || 'Action not specified',
+    estimatedTime: step.estimatedTime || '15min'
+  }));
+
+  return plan;
 }
 
 // ── Smart Memory Triggers ─────────────────────────────────────────────────────
@@ -628,6 +756,31 @@ module.exports = async (req, res) => {
 
     // ── Boss commands (DM only) ───────────────────────────────────────────────
     if (isBoss && isPrivate && text.startsWith('/')) {
+
+      // Agent planning command
+      if (text.startsWith('/agent plan ')) {
+        const goal = text.substring('/agent plan '.length).trim();
+        if (goal.length < 3) {
+          await bot.sendMessage(chatId, 'Please provide a clear goal after /agent plan\nExample: /agent plan my productive week');
+          return res.status(200).send('OK');
+        }
+
+        try {
+          await bot.sendChatAction(chatId, 'typing');
+          const plan = await planGoal(goal, senderId);
+          await bot.sendMessage(chatId, formatPlanForTelegram(plan), { parse_mode: 'Markdown' });
+        } catch (error) {
+          console.error('Plan generation error:', error);
+          await bot.sendMessage(chatId, `Sorry, I couldn't generate a plan. Error: ${error.message}`);
+        }
+        return res.status(200).send('OK');
+      }
+
+      // /agent help
+      if (text.startsWith('/agent') || text.startsWith('/agent ')) {
+        await bot.sendMessage(chatId, `*Agent Commands*\n\n/agent plan <goal> - Generate a structured plan\n\nExample: /agent plan my productive week`, { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      }
 
       if (text === '/start') {
         await bot.sendMessage(chatId, `What's good ${BOSS_NAME} 👋\nOnline and ready.`, { reply_markup: MAIN_MENU_KEYBOARD });

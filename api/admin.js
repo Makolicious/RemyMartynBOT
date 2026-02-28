@@ -1,4 +1,5 @@
 const Redis = require('ioredis');
+const { formatMemoryForTelegram } = require('./utils/formatter');
 
 // ── Admin Authentication ─────────────────────────────────────────────────────
 
@@ -129,8 +130,9 @@ module.exports = async (req, res) => {
     // ── GET /memory ──────────────────────────────────────────────────
     if (path === '/memory' && req.method === 'GET') {
       const memory = await db.get(MEMORY_KEY);
+      const formatted = formatMemoryForTelegram(memory || 'No memory yet.');
       return jsonResponse(res, {
-        memory: memory || 'No memory yet.',
+        memory: formatted,
         length: memory?.length || 0,
       });
     }
