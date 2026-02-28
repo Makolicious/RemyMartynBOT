@@ -138,6 +138,21 @@ module.exports = async (req, res) => {
       });
     }
 
+    // ── GET /debug/legacy — debug legacy memory parsing ────────────────
+    if (path === '/debug/legacy' && req.method === 'GET') {
+      const { parseTables } = require('./utils/formatter');
+      const legacyMemory = await db.get(MEMORY_KEY);
+
+      const tables = parseTables(legacyMemory || '');
+
+      return jsonResponse(res, {
+        legacyMemoryLength: legacyMemory?.length || 0,
+        tablesCount: tables.length,
+        tableTitles: tables.map(t => t.title),
+        sampleRows: tables.map(t => ({ title: t.title, rowCount: t.rows.length, firstRow: t.rows[0] }))
+      });
+    }
+
     // ── PUT /memory ──────────────────────────────────────────────────
     if (path === '/memory' && req.method === 'PUT') {
       const body = req.body || {};
@@ -397,6 +412,9 @@ module.exports = async (req, res) => {
 
       const legacyMemory = await db.get(LEGACY_MEMORY_KEY);
 
+      console.log('[MIGRATE] Legacy memory length:', legacyMemory?.length || 0);
+      console.log('[MIGRATE] First 500 chars:', legacyMemory?.substring(0, 500));
+
       if (!legacyMemory) {
         return jsonResponse(res, {
           success: false,
@@ -417,6 +435,9 @@ module.exports = async (req, res) => {
 
       // Parse markdown tables
       const tables = parseTables(legacyMemory);
+
+      console.log('[MIGRATE] Parsed tables count:', tables.length);
+      console.log('[MIGRATE] Table titles:', tables.map(t => t.title));
 
       let totalMigrated = 0;
       let skipped = 0;
