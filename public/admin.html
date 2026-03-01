@@ -186,7 +186,7 @@
               <option value="">All Categories</option>
             </select>
             <button onclick="triggerDecay()" class="bg-yellow-500 hover:bg-yellow-600 px-3 py-2 rounded-lg text-sm">⏱️ Decay</button>
-            <button onclick="migrateLegacyMemories()" class="bg-purple-500 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm">📥 Migrate</button>
+            <button onclick="migrateLegacyMemories()" class="bg-purple-500 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm">🧠 AI Migrate</button>
             <button onclick="addMemoryDialog()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">+ Add</button>
           </div>
         </div>
@@ -526,13 +526,13 @@
     }
 
     async function migrateLegacyMemories() {
-      if (!confirm('Migrate legacy Memory tables to new Self-Organizing Memories? This will parse the old markdown tables and create structured entries.')) return;
+      if (!confirm('Migrate legacy Memory using AI? This will analyze the old memory and extract facts into the new system. This takes a few seconds...')) return;
 
-      showToast('Starting migration...', 'info');
+      showToast('Starting AI migration...', 'info');
 
-      const data = await apiCall('/memories/migrate', { method: 'POST' });
+      const data = await apiCall('/memories/ai-migrate', { method: 'POST' });
       if (data?.success) {
-        showToast(`Migrated ${data.migrated} memories from ${data.tables} tables!`);
+        showToast(`Migrated ${data.migrated} memories!`);
         loadMemories();
         loadMemoriesStats();
       } else {

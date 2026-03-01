@@ -566,6 +566,126 @@ module.exports = async (req, res) => {
       });
     }
 
+    // ── POST /memories/ai-migrate — AI-based migration ────────
+    if (path === '/memories/ai-migrate' && req.method === 'POST') {
+      const LEGACY_MEMORY_KEY = 'remy_memory';
+
+      const legacyMemory = await db.get(LEGACY_MEMORY_KEY);
+
+      console.log('[AI-MIGRATE] Legacy memory length:', legacyMemory?.length || 0);
+
+      if (!legacyMemory) {
+        return jsonResponse(res, {
+          success: false,
+          message: 'No legacy memory found to migrate'
+        });
+      }
+
+      // Get existing memories for deduplication
+      const allCategories = memory.CATEGORIES;
+      const existingMemories = [];
+      for (const cat of allCategories) {
+        const catMemories = await memory.getMemoriesByCategory(cat, 50);
+        existingMemories.push(...catMemories);
+      }
+      const existingKeys = new Set(
+        existingMemories.map(m => `${m.category}:${m.content.toLowerCase().slice(0, 30)}`)
+      );
+
+      // Use AI to extract facts from legacy memory
+      const { zai } = require('zhipu-ai-provider');
+      const { generateText } = require('ai');
+      const UTILITY_MODEL = zai('glm-5');
+
+      const { text: extractionResult } = await generateText({
+        model: UTILITY_MODEL,
+        prompt: `Extract facts about the user from this memory. Return as JSON array.
+
+LEGACY MEMORY:
+${legacyMemory}
+
+CATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}
+
+RULES:
+- Extract ALL meaningful facts (don't skip trivial things)
+- Each fact should be a single concise statement
+- Assign appropriate category from the list
+- Return ONLY JSON array, nothing else
+
+Response format:
+[
+  {"content": "User's name is Marco", "category": "Boss Profile"},
+  {"content": "Main goal is to build AI products", "category": "Goals & Aspirations"}
+]`,
+        temperature: 0.3,
+        maxTokens: 2000,
+      });
+
+      console.log('[AI-MIGRATE] AI extraction result length:', extractionResult?.length || 0);
+
+      const facts = JSON.parse(extractionResult);
+
+      if (!Array.isArray(facts) || facts.length === 0) {
+        return jsonResponse(res, {
+          success: false,
+          message: 'AI found no facts to migrate'
+        });
+      }
+
+      let totalMigrated = 0;
+      let skipped = 0;
+      const results = {};
+
+      for (const fact of facts) {
+        if (!fact.content || !fact.category) {
+          skipped++;
+          continue;
+        }
+
+        const category = fact.category;
+
+        // Skip if category doesn't exist
+        if (!memory.CATEGORIES.includes(category)) {
+          console.log('[AI-MIGRATE] Skipping unknown category:', category);
+          skipped++;
+          continue;
+        }
+
+        const content = fact.content.trim();
+
+        // Skip empty facts
+        if (content.length < 5) {
+          skipped++;
+          continue;
+        }
+
+        // Check for duplicates
+        const key = `${category}:${content.toLowerCase().slice(0, 30)}`;
+        if (existingKeys.has(key)) {
+          console.log('[AI-MIGRATE] Skipping duplicate:', content);
+          skipped++;
+          continue;
+        }
+
+        try {
+          await memory.addMemory(content, category, 85);
+          existingKeys.add(key);
+          totalMigrated++;
+          results[category] = (results[category] || 0) + 1;
+        } catch (err) {
+          console.error('[AI-MIGRATE] Error:', err.message);
+          skipped++;
+        }
+      }
+
+      return jsonResponse(res, {
+        success: true,
+        migrated: totalMigrated,
+        skipped,
+        results
+      });
+    }
+
     // ── Unknown endpoint ─────────────────────────────────────────────
     return jsonResponse(res, { error: 'Not found', path }, 404);
 
