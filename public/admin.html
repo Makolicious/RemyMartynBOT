@@ -41,19 +41,34 @@
       backdrop-filter: blur(10px);
       border: 1px solid rgba(255,255,255,0.15);
       color: #f0f0f0;
+      transition: all 0.2s ease;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .nav-btn {
+      transition: all 0.2s ease;
+    }
+    .nav-btn:hover {
+      box-shadow: 0 0 12px rgba(99,102,241,0.4);
+      transform: translateY(-1px);
     }
     .nav-btn.active {
-      background: rgba(99,102,241,0.3);
+      background: rgba(99,102,241,0.4);
       border-color: #6366f1;
+      box-shadow: 0 0 8px rgba(99,102,241,0.5);
     }
     input, select, textarea {
       background: rgba(10, 10, 15, 0.9);
       border: 1px solid rgba(255,255,255,0.2);
       color: #ffffff !important;
+      transition: all 0.2s ease;
     }
     input:focus, select:focus, textarea:focus {
       border-color: #6366f1;
       outline: none;
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.4);
     }
     input::placeholder, textarea::placeholder {
       color: rgba(255,255,255,0.4) !important;
@@ -62,11 +77,15 @@
       width: 8px;
     }
     ::-webkit-scrollbar-track {
-      background: rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.08);
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,0.25);
-      border-radius: 4px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 6px;
+      transition: background 0.2s ease;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.5);
     }
     /* Memory editor specific styling */
     #memoryEditor {
@@ -76,7 +95,16 @@
     }
     #memoryEditor:focus {
       border-color: #6366f1 !important;
-      box-shadow: 0 0 0 2px rgba(99,102,241,0.3) !important;
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.4) !important;
+    }
+    /* Stats cards */
+    .stat-card {
+      background: linear-gradient(145deg, rgba(40,40,55,0.9) 0%, rgba(50,50,70,0.85) 100%);
+      transition: all 0.2s ease;
+    }
+    .stat-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     }
     /* Better text visibility */
     .text-gray-400 {
@@ -87,6 +115,30 @@
     }
     .text-gray-500 {
       color: #909090 !important;
+    }
+    /* Loading overlay */
+    #loading {
+      backdrop-filter: blur(8px);
+      background: rgba(0, 0, 0, 0.7);
+    }
+    /* Toast animations */
+    #toast {
+      animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    /* Hot memory glow effect */
+    .memory-hot {
+      box-shadow: 0 0 16px rgba(34, 197, 94, 0.3);
+      border-color: rgba(34, 197, 94, 0.4);
     }
   </style>
 </head>
@@ -115,7 +167,10 @@
           <span class="font-bold text-lg">Remy Admin</span>
         </div>
         <div class="flex items-center gap-2">
-          <span id="connectionStatus" class="text-green-400 text-sm">● Connected</span>
+          <span id="connectionStatus" class="text-green-400 text-sm flex items-center gap-1">
+            <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+            Connected
+          </span>
           <button onclick="logout()" class="text-gray-400 hover:text-white transition">Logout</button>
         </div>
       </div>
@@ -123,14 +178,14 @@
 
     <!-- Navigation -->
     <div class="max-w-4xl mx-auto p-4">
-      <div class="flex gap-2 overflow-x-auto pb-2 mb-6">
-        <button onclick="showSection('stats')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="stats">📊 Stats</button>
-        <button onclick="showSection('memory')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="memory">🧠 Memory</button>
-        <button onclick="showSection('memories')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="memories">🔮 Memories</button>
-        <button onclick="showSection('notes')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
-        <button onclick="showSection('reminders')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="reminders">⏰ Reminders</button>
-        <button onclick="showSection('log')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
-        <button onclick="showSection('users')" class="nav-btn px-4 py-2 rounded-lg border border-white/10 whitespace-nowrap" data-section="users">👥 Users</button>
+      <div class="flex gap-3 overflow-x-auto pb-3 mb-6">
+        <button onclick="showSection('stats')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="stats">📊 Stats</button>
+        <button onclick="showSection('memory')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="memory">🧠 Memory</button>
+        <button onclick="showSection('memories')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="memories">🔮 Memories</button>
+        <button onclick="showSection('notes')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
+        <button onclick="showSection('reminders')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="reminders">⏰ Reminders</button>
+        <button onclick="showSection('log')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
+        <button onclick="showSection('users')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="users">👥 Users</button>
       </div>
     </div>
 
@@ -141,29 +196,29 @@
       <section id="section-stats" class="section">
         <h2 class="text-xl font-bold mb-4">Dashboard Stats</h2>
         <div id="statsContent" class="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-indigo-400" id="statExchanges">-</div>
-            <div class="text-gray-400">Total Exchanges</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-indigo-400 tracking-tight" id="statExchanges">-</div>
+            <div class="text-gray-300 text-sm mt-1">Total Exchanges</div>
           </div>
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-green-400" id="statLogEntries">-</div>
-            <div class="text-gray-400">Log Entries</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-green-400 tracking-tight" id="statLogEntries">-</div>
+            <div class="text-gray-300 text-sm mt-1">Log Entries</div>
           </div>
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-purple-400" id="statMemorySize">-</div>
-            <div class="text-gray-400">Memory Size</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-purple-400 tracking-tight" id="statMemorySize">-</div>
+            <div class="text-gray-300 text-sm mt-1">Memory Size</div>
           </div>
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-yellow-400" id="statApprovedUsers">-</div>
-            <div class="text-gray-400">Approved Users</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-yellow-400 tracking-tight" id="statApprovedUsers">-</div>
+            <div class="text-gray-300 text-sm mt-1">Approved Users</div>
           </div>
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-blue-400" id="statSavedNotes">-</div>
-            <div class="text-gray-400">Saved Notes</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-blue-400 tracking-tight" id="statSavedNotes">-</div>
+            <div class="text-gray-300 text-sm mt-1">Saved Notes</div>
           </div>
-          <div class="card rounded-xl p-4">
-            <div class="text-3xl font-bold text-red-400" id="statPendingReminders">-</div>
-            <div class="text-gray-400">Pending Reminders</div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-red-400 tracking-tight" id="statPendingReminders">-</div>
+            <div class="text-gray-300 text-sm mt-1">Pending Reminders</div>
           </div>
         </div>
       </section>
@@ -205,7 +260,7 @@
           <h2 class="text-xl font-bold">📝 Notes</h2>
           <button onclick="addNote()" class="bg-indigo-500 hover:bg-indigo-600 px-4 py-2 rounded-lg font-bold transition">+ Add Note</button>
         </div>
-        <div id="notesList" class="space-y-3"></div>
+        <div id="notesList" class="space-y-4"></div>
       </section>
 
       <!-- Reminders Section -->
@@ -250,8 +305,15 @@
   </div>
 
   <!-- Loading Overlay -->
-  <div id="loading" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-    <div class="text-2xl">Loading...</div>
+  <div id="loading" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div class="card rounded-2xl p-8 text-center">
+      <div class="text-2xl mb-2">Loading...</div>
+      <div class="flex justify-center gap-1">
+        <span class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+        <span class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 150ms"></span>
+        <span class="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style="animation-delay: 300ms"></span>
+      </div>
+    </div>
   </div>
 
   <!-- Toast Notification -->
@@ -378,7 +440,7 @@
       toast.textContent = message;
       toast.className = `fixed bottom-4 left-4 right-4 px-4 py-2 rounded-lg shadow-xl z-50 ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
       toast.classList.remove('hidden');
-      setTimeout(() => toast.classList.add('hidden'), 3000);
+      setTimeout(() => toast.classList.add('hidden'), 2500);
     }
 
     // ── Stats ─────────────────────────────────────────────────────────
@@ -452,22 +514,22 @@
             const confidenceBar = `<div class="w-full bg-gray-700 rounded-full h-1.5 mt-2"><div class="bg-blue-400 h-1.5 rounded-full" style="width: ${m.confidence}%"></div></div>`;
             const pinIcon = m.pinned ? '<span class="text-yellow-400" title="Pinned - no decay">📌</span>' : '';
             return `
-              <div class="card rounded-lg p-3 ${m.pinned ? 'border-yellow-500/30 border-2' : ''}">
-                <div class="flex justify-between items-start mb-2">
+              <div class="card rounded-lg p-4 mb-3 ${m.pinned ? 'border-yellow-500/30 border-2' : ''} ${m.importance > 70 ? 'memory-hot' : ''}">
+                <div class="flex justify-between items-start mb-3">
                   <div class="flex items-center gap-2">
                     ${pinIcon}
-                    <span class="text-xs px-2 py-1 rounded bg-indigo-500/20 text-indigo-300">${m.category}</span>
+                    <span class="text-xs px-3 py-1.5 rounded bg-indigo-500/30 text-indigo-300 font-medium">${m.category}</span>
                   </div>
                   <div class="flex gap-3 text-xs">
                     <span class="${importanceColor}">⚡ ${m.importance.toFixed(0)}</span>
                     <span class="text-gray-400">📝 ${m.access_count}</span>
                   </div>
                 </div>
-                <p class="text-sm mb-2">${m.content}</p>
+                <p class="text-sm mb-3 leading-relaxed">${m.content}</p>
                 ${confidenceBar}
-                <div class="flex justify-between items-center mt-2 text-xs text-gray-500">
+                <div class="flex justify-between items-center mt-3 text-xs text-gray-400">
                   <span>Created: ${new Date(m.created_at).toLocaleDateString()}</span>
-                  <button onclick="deleteMemory('${m.id}')" class="text-red-400 hover:text-red-300">Delete</button>
+                  <button onclick="deleteMemory('${m.id}')" class="text-red-400 hover:text-red-300 transition">Delete</button>
                 </div>
               </div>
             `;
@@ -543,10 +605,10 @@
       if (data) {
         const list = document.getElementById('notesList');
         list.innerHTML = data.notes.map(n => `
-          <div class="card rounded-lg p-4">
-            <div class="text-gray-400 text-sm mb-2">${n.timestamp.slice(0, 10)}</div>
-            <p class="mb-3">${n.text}</p>
-            <button onclick="deleteNote(${n.id})" class="text-red-400 hover:text-red-300 text-sm">Delete</button>
+          <div class="card rounded-lg p-5">
+            <div class="text-indigo-300 text-sm font-medium mb-2">${n.timestamp.slice(0, 10)}</div>
+            <p class="text-gray-100 mb-3 leading-relaxed">${n.text}</p>
+            <button onclick="deleteNote(${n.id})" class="text-red-400 hover:text-red-300 text-sm transition">Delete</button>
           </div>
         `).join('');
       }
