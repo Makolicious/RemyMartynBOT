@@ -40,6 +40,7 @@ const DEDUP_PREFIX    = 'dedup_';
 const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
 const TIMEZONE_KEY    = 'remy_boss_timezone';
+ function analyzeQueryComplexity(query) {
 
 const MAX_HIST_MSGS   = 8;
 const MAX_LOG_ENTRIES = 500;
@@ -51,6 +52,37 @@ const SPAM_LIMIT      = 5; // max @mentions per minute from approved users
 const BOSS_NAME    = process.env.BOSS_NAME     || 'Mako';
 const BOSS_ALIASES = process.env.BOSS_ALIASES  || '';
 const SERPER_KEY   = process.env.SERPER_API_KEY || '';
+
+// ── Adaptive Response System ────────────────────────────────────
+// Analyze query complexity and adjust response length dynamically
+function analyzeQueryComplexity(query) {
+  const questionWords = ['who', 'what', 'when', 'where', 'how', 'why'];
+  const contextKeywords = ['explain', 'summarize', 'list'];
+
+  const wordCount = query.trim().split(/\s+/).length;
+  const hasQuestionWords = questionWords.some(word => query.toLowerCase().includes(word));
+  const hasContextKeywords = contextKeywords.some(keyword => query.toLowerCase().includes(keyword));
+
+  // Determine complexity based on query characteristics
+  let complexity;
+  let maxTokens;
+
+  if (hasQuestionWords || hasContextKeywords) {
+    // Questions or context requests need detailed answers
+    complexity = 'complex';
+    maxTokens = 500;
+  } else if (wordCount > 30) {
+    // Medium length queries
+    complexity = 'medium';
+    maxTokens = 300;
+  } else {
+    // Short, simple queries
+    complexity = 'simple';
+    maxTokens = 200;
+  }
+
+  return { complexity, maxTokens };
+}
 
 // ── Structured memory template (20 table-based categories) ──────────────────
 const EMPTY_MEMORY = `# Remy's Memory Tables
@@ -651,11 +683,28 @@ async function handleInlineQuery(query, res) {
     return res.status(200).send('OK');
   }
 
+  // Analyze query complexity for adaptive response
+  const { complexity, maxTokens } = analyzeQueryComplexity(queryText);
+
+  // Generate dynamic system prompt based on complexity
+  let systemPrompt;
+  if (complexity === 'simple') {
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 1-2 sentences. No fluff.`;
+  } else if (complexity === 'medium') {
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 2-3 sentences. No fluff.`;
+  } else {
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 3-5 sentences. No fluff.`;
+  }
+
+  console.log(`[INLINE] Complexity: ${complexity}, maxTokens: ${maxTokens}, Query: "${queryText.slice(0, 50)}"...`);
+
   try {
     const { text: answer } = await generateText({
       model: CHAT_MODEL,
-      system: `You are Remy — a sharp, concise AI assistant. Answer in 1-3 sentences. No fluff.`,
+      system: systemPrompt,
       messages: [{ role: 'user', content: queryText }],
+      maxTokens: maxTokens,
+      temperature: 0.7,
       abortSignal: AbortSignal.timeout(8000),
     });
 
