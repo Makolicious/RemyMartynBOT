@@ -186,7 +186,6 @@
               <option value="">All Categories</option>
             </select>
             <button onclick="triggerDecay()" class="bg-yellow-500 hover:bg-yellow-600 px-3 py-2 rounded-lg text-sm">⏱️ Decay</button>
-            <button onclick="migrateLegacyMemories()" class="bg-purple-500 hover:bg-purple-600 px-3 py-2 rounded-lg text-sm">🧠 AI Migrate</button>
             <button onclick="addMemoryDialog()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg font-bold transition">+ Add</button>
           </div>
         </div>
@@ -339,7 +338,6 @@
           },
           ...options
         });
-        const data = await res.json();
 
         if (res.status === 401) {
           logout();
@@ -347,11 +345,25 @@
           return null;
         }
 
+        // Handle non-JSON responses (like 504 timeout)
+        const contentType = res.headers.get('content-type');
+        let data;
+
+        if (contentType && contentType.includes('application/json')) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          data = { error: text || `Server error (${res.status})` };
+        }
+
         if (data.error) {
           showToast(data.error, 'error');
         }
 
         return data;
+      } catch (err) {
+        showToast(`Request failed: ${err.message}`, 'error');
+        return null;
       } finally {
         showLoading(false);
       }
@@ -522,21 +534,6 @@
       if (data?.success) {
         showToast(`Decay applied to ${data.decayed} memories`);
         loadMemories();
-      }
-    }
-
-    async function migrateLegacyMemories() {
-      if (!confirm('Migrate legacy Memory using AI? This will analyze the old memory and extract facts into the new system. This takes a few seconds...')) return;
-
-      showToast('Starting AI migration...', 'info');
-
-      const data = await apiCall('/memories/ai-migrate', { method: 'POST' });
-      if (data?.success) {
-        showToast(`Migrated ${data.migrated} memories!`);
-        loadMemories();
-        loadMemoriesStats();
-      } else {
-        showToast(data.message || 'Migration failed', 'error');
       }
     }
 

@@ -566,7 +566,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ── POST /memories/ai-migrate — AI-based migration ────────
+    // ── POST /memories/ai-migrate — AI-based migration (chunked) ────────
     if (path === '/memories/ai-migrate' && req.method === 'POST') {
       const LEGACY_MEMORY_KEY = 'remy_memory';
 
@@ -592,51 +592,90 @@ module.exports = async (req, res) => {
         existingMemories.map(m => `${m.category}:${m.content.toLowerCase().slice(0, 30)}`)
       );
 
-      // Use AI to extract facts from legacy memory
+      // Split memory into chunks to avoid timeout (each chunk ~2500 chars)
+      const CHUNK_SIZE = 2500;
+      const chunks = [];
+
+      // Split on newlines to avoid breaking in the middle of sentences
+      const lines = legacyMemory.split('\n');
+      let currentChunk = '';
+
+      for (const line of lines) {
+        if (currentChunk.length + line.length > CHUNK_SIZE && currentChunk.length > 0) {
+          chunks.push(currentChunk);
+          currentChunk = '';
+        }
+        currentChunk += line + '\n';
+      }
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk);
+      }
+
+      console.log('[AI-MIGRATE] Split into', chunks.length, 'chunks');
+
+      // Process each chunk with AI
       const { zai } = require('zhipu-ai-provider');
       const { generateText } = require('ai');
       const UTILITY_MODEL = zai('glm-5');
 
-      const { text: extractionResult } = await generateText({
-        model: UTILITY_MODEL,
-        prompt: `Extract facts about the user from this memory. Return as JSON array.
+      const allFacts = [];
+      let totalMigrated = 0;
+      let skipped = 0;
+      const results = {};
 
-LEGACY MEMORY:
-${legacyMemory}
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(`[AI-MIGRATE] Processing chunk ${i + 1}/${chunks.length} (${chunk.length} chars)`);
+
+        try {
+          const { text: extractionResult } = await generateText({
+            model: UTILITY_MODEL,
+            prompt: `Extract facts about the user from this memory chunk. Return as JSON array.
+
+MEMORY CHUNK (part ${i + 1} of ${chunks.length}):
+${chunk}
 
 CATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}
 
 RULES:
-- Extract ALL meaningful facts (don't skip trivial things)
+- Extract ALL meaningful facts from this chunk only
 - Each fact should be a single concise statement
 - Assign appropriate category from the list
 - Return ONLY JSON array, nothing else
 
 Response format:
 [
-  {"content": "User's name is Marco", "category": "Boss Profile"},
-  {"content": "Main goal is to build AI products", "category": "Goals & Aspirations"}
+  {"content": "fact here", "category": "Category Name"}
 ]`,
-        temperature: 0.3,
-        maxTokens: 2000,
-      });
+            temperature: 0.3,
+            maxTokens: 1500,
+          });
 
-      console.log('[AI-MIGRATE] AI extraction result length:', extractionResult?.length || 0);
+          console.log(`[AI-MIGRATE] Chunk ${i + 1} result length:`, extractionResult?.length || 0);
 
-      const facts = JSON.parse(extractionResult);
+          const facts = JSON.parse(extractionResult);
+          if (Array.isArray(facts)) {
+            allFacts.push(...facts);
+            console.log(`[AI-MIGRATE] Chunk ${i + 1}: extracted ${facts.length} facts`);
+          }
+        } catch (err) {
+          console.error(`[AI-MIGRATE] Chunk ${i + 1} error:`, err.message);
+          skipped++;
+        }
+      }
 
-      if (!Array.isArray(facts) || facts.length === 0) {
+      console.log('[AI-MIGRATE] Total facts extracted:', allFacts.length);
+
+      if (allFacts.length === 0) {
         return jsonResponse(res, {
           success: false,
-          message: 'AI found no facts to migrate'
+          message: 'AI found no facts to migrate',
+          chunksProcessed: chunks.length
         });
       }
 
-      let totalMigrated = 0;
-      let skipped = 0;
-      const results = {};
-
-      for (const fact of facts) {
+      // Process all facts (deduplicate and add)
+      for (const fact of allFacts) {
         if (!fact.content || !fact.category) {
           skipped++;
           continue;
@@ -682,6 +721,7 @@ Response format:
         success: true,
         migrated: totalMigrated,
         skipped,
+        chunksProcessed: chunks.length,
         results
       });
     }
