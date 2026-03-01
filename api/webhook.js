@@ -40,7 +40,6 @@ const DEDUP_PREFIX    = 'dedup_';
 const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
 const TIMEZONE_KEY    = 'remy_boss_timezone';
- function analyzeQueryComplexity(query) {
 
 const MAX_HIST_MSGS   = 8;
 const MAX_LOG_ENTRIES = 500;
