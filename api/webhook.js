@@ -1,9 +1,8 @@
 const { zai } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 
-const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model (text-only, fast)
-const VISION_MODEL   = zai('glm-4v');    // Vision model for photo analysis
-const UTILITY_MODEL = zai('glm-5');     // memory rebuild, summarize, reasoning
+const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model
+const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 const { formatMemoryForTelegram } = require('./utils/formatter');
@@ -1545,14 +1544,13 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
       const aiTimeout = setTimeout(() => abortController.abort(), 50000);
       try {
         const result = await generateText({
-          model: isPhoto ? VISION_MODEL : CHAT_MODEL,
+          model: CHAT_MODEL,
           system: systemPrompt,
           messages: [...history, currentMessage],
           abortSignal: abortController.signal,
         });
         aiResponse = result.text;
-        const modelName = isPhoto ? 'GLM-4v' : 'GLM-4.5';
-        console.log(`[AI] ${modelName} success in ${Date.now() - aiStartTime}ms`);
+        console.log(`[AI] GLM-4.5 success in ${Date.now() - aiStartTime}ms`);
       } finally {
         clearTimeout(aiTimeout);
       }
