@@ -5,7 +5,6 @@ const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
-const { formatMemoryForTelegram } = require('./utils/formatter');
 const memory = require('./memory');  // Self-organizing memory system
 
 // ── Validate required env vars on cold start ──────────────────────────────────
@@ -82,113 +81,6 @@ function analyzeQueryComplexity(query) {
 
   return { complexity, maxTokens };
 }
-
-// ── Structured memory template (20 table-based categories) ──────────────────
-const EMPTY_MEMORY = `# Remy's Memory Tables
-
-## 1. Boss Profile
-| Field | Value |
-|-------|-------|
-| Name | [Name] |
-| Location | [City/Country] |
-| Role/Title | [Position] |
-| Birthday | [Date] |
-
-## 2. Personality & Traits
-| Trait | Description | Intensity |
-|-------|-------------|-----------|
-| [Trait] | [Details] | [High/Med/Low] |
-
-## 3. Goals & Aspirations
-| Goal | Category | Priority | Status |
-|------|----------|----------|--------|
-| [Goal description] | [Work/Personal/Health] | [P1/P2/P3] | [Active/On Hold] |
-
-## 4. Habits & Routines
-| Habit | Frequency | Time | Notes |
-|-------|-----------|------|-------|
-| [Daily habit] | Daily | [Time] | [Details] |
-| [Weekly habit] | Weekly | [Day] | [Details] |
-
-## 5. Skills & Expertise
-| Skill | Level | Experience | Last Used |
-|-------|-------|------------|-----------|
-| [Skill name] | [Expert/Advanced/Intermediate] | [Years] | [Context] |
-
-## 6. Friends & Contacts
-| Name | Relationship | Last Contact | Key Info |
-|------|--------------|--------------|----------|
-| [Name] | [Friend/Colleague] | [Date/Time] | [Important notes] |
-
-## 7. Family Members
-| Name | Relation | Birthday/Key Dates | Notes |
-|------|----------|-------------------|-------|
-| [Name] | [Relation] | [Date] | [Details] |
-
-## 8. Business Associates
-| Name | Role | Company/Context | Relationship Status |
-|------|------|-----------------|---------------------|
-| [Name] | [Role] | [Company] | [Status] |
-
-## 9. Active Projects
-| Project | Phase | Deadline | Progress | Notes |
-|----------|-------|----------|----------|-------|
-| [Name] | [Planning/Execution/Done] | [Date] | [%] | [Details] |
-
-## 10. Business Ideas & Ventures
-| Idea | Status | Potential | Next Steps |
-|------|--------|-----------|------------|
-| [Description] | [Idea/Planning/Active] | [High/Med/Low] | [Action items] |
-
-## 11. Food & Drink Preferences
-| Item | Type | Preference | Notes |
-|------|------|------------|-------|
-| [Food/Drink] | [Cuisine/Category] | [Love/Like/Dislike] | [Details] |
-
-## 12. Technology & Tools
-| Tool/Service | Purpose | Proficiency | Notes |
-|--------------|--------|-------------|-------|
-| [Name] | [Usage] | [Expert/Comfortable/Learning] | [Details] |
-
-## 13. Entertainment Preferences
-| Category | Favorites | Dislikes | Notes |
-|----------|-----------|----------|-------|
-| [Movies/Music/Games] | [List] | [List] | [Details] |
-
-## 14. Work Style & Environment
-| Aspect | Preference | Current State |
-|--------|------------|---------------|
-| [Deep work/Meetings/etc.] | [Preference] | [Current setup] |
-
-## 15. Communication Style
-| Channel | Preference | Response Time | Notes |
-|----------|------------|---------------|-------|
-| [Telegram/Email/etc.] | [Preferred/OK/Avoid] | [Typical] | [Details] |
-
-## 16. Travel & Places
-| Location | Type | Visited? | Notes |
-|----------|------|----------|-------|
-| [City/Country] | [Home/Work/Favorite/Visited] | [Yes/No/Soon] | [Details] |
-
-## 17. Key Dates & Milestones
-| Date | Event | Type | Reminder Set? |
-|------|-------|------|---------------|
-| [Date] | [Description] | [Personal/Work/Family] | [Yes/No] |
-
-## 18. Decisions & Commitments
-| Decision | Date | Status | Notes |
-|----------|------|--------|-------|
-| [Description] | [Made] | [Active/Completed/Cancelled] | [Details] |
-
-## 19. Pending Action Items
-| Task | Priority | Due Date | Status |
-|------|----------|----------|--------|
-| [Description] | [P1/P2/P3] | [Date] | [Not Started/In Progress] |
-
-## 20. Notes & Miscellaneous
-| Category | Entry | Date |
-|----------|-------|------|
-| [Category] | [Note content] | [Date] |`;
 
 const PLANNER_SYSTEM = `You are a planning agent for Remy.
 
@@ -317,41 +209,27 @@ function formatPlanForTelegram(plan) {
   return msg;
 }
 
-// Call planner - inline implementation to avoid network call
-async function planGoal(goal, userId) {
-  const memory = await redis.get(MEMORY_KEY) || EMPTY_MEMORY;
-  const timezone = await redis.get(TIMEZONE_KEY) || 'UTC';
+// Call planner - inline to avoid network call
+async function planGoal(goal) {
+  const [memoryExport, timezone] = await Promise.all([
+    memory.exportAsMarkdown(),
+    redis.get(TIMEZONE_KEY),
+  ]);
   const currentDate = new Date().toISOString().split('T')[0];
-
-  const prompt = `Goal: ${goal}
-
-Context:
-- Current Date: ${currentDate}
-- Timezone: ${timezone}
-
-Memory:
-${memory || 'No memory available yet.'}
-
-Generate a plan to achieve this goal. Return ONLY valid JSON with title, steps array (each with id, action, estimatedTime), and optional notes. 3-7 steps max.`;
 
   const result = await generateText({
     model: CHAT_MODEL,
     system: PLANNER_SYSTEM,
-    prompt,
+    prompt: `Goal: ${goal}\n\nContext:\n- Current Date: ${currentDate}\n- Timezone: ${timezone || 'UTC'}\n\nMemory:\n${memoryExport || 'No memory available yet.'}\n\nGenerate a plan. Return ONLY valid JSON with title, steps array (each with id, action, estimatedTime), and optional notes. 3-7 steps max.`,
     temperature: 0.7,
     maxTokens: 800,
   });
 
   const jsonMatch = result.text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error('No JSON found in response');
-  }
+  if (!jsonMatch) throw new Error('No JSON found in response');
 
   const plan = JSON.parse(jsonMatch[0]);
-
-  if (!plan.title || !plan.steps || !Array.isArray(plan.steps)) {
-    throw new Error('Invalid plan structure');
-  }
+  if (!plan.title || !plan.steps || !Array.isArray(plan.steps)) throw new Error('Invalid plan structure');
 
   plan.steps = plan.steps.map((step, idx) => ({
     id: step.id || idx + 1,
@@ -382,28 +260,6 @@ function containsKeyFactPatterns(text) {
   return patterns.some(p => p.test(text));
 }
 
-// AI-assisted check: Is this exchange worth remembering immediately?
-// Returns true if AI confirms key facts are present
-async function shouldUpdateMemoryImmediately(userMsg, aiResponse, senderName) {
-  try {
-    const result = await generateText({
-      model: CHAT_MODEL,
-      max_tokens: 50,
-      prompt: `Does this exchange contain NEW information worth remembering? Reply ONLY "yes" or "no".
-
-User (${senderName}): "${userMsg.slice(0, 200)}"
-Remy: "${aiResponse.slice(0, 200)}"
-
-Consider: new names, contact info, decisions, preferences, commitments, deadlines, personal details.`,
-    });
-    const response = result.text.toLowerCase().trim();
-    return response === 'yes';
-  } catch (err) {
-    console.log('[MEMORY TRIGGER] AI check failed, assuming no key facts:', err.message);
-    return false;
-  }
-}
-
 // ── Callback query handler (inline keyboard button taps) ─────────────────────
 async function handleCallbackQuery(query, res) {
   const chatId    = query.message.chat.id;
@@ -428,13 +284,13 @@ async function handleCallbackQuery(query, res) {
 
     // ── Memory ──
     if (data === 'menu_memory') {
-      const memory = await redis.get(MEMORY_KEY);
-      const text = memory ? `🧠 *Memory:*\n\n${memory}` : '🧠 No memory yet.';
-      if (text.length > 4000) {
-        await safeSend(chatId, text);
+      const markdown = await memory.exportAsMarkdown();
+      const memText = markdown ? `🧠 *Memory:*\n\n${markdown}` : '🧠 No memory yet.';
+      if (memText.length > 4000) {
+        await safeSend(chatId, memText);
         await bot.answerCallbackQuery(query.id, { text: 'See below ↓' });
       } else {
-        await safeEdit(chatId, messageId, text, backButton());
+        await safeEdit(chatId, messageId, memText, backButton());
         await bot.answerCallbackQuery(query.id);
       }
       return res.status(200).send('OK');
@@ -862,14 +718,8 @@ module.exports = async (req, res) => {
       }
 
       if (text === '/memory') {
-        const memory = await redis.get(MEMORY_KEY);
-        await safeSend(chatId, memory ? `🧠 *Memory:*\n\n${memory}` : '🧠 No memory yet.');
-        return res.status(200).send('OK');
-      }
-
-      if (text === '/clearmemory') {
-        await redis.del(MEMORY_KEY);
-        await bot.sendMessage(chatId, '🗑️ Memory wiped.');
+        const markdown = await memory.exportAsMarkdown();
+        await safeSend(chatId, markdown ? `🧠 *Memory:*\n\n${markdown}` : '🧠 No memory yet. Talk to me and I\'ll remember.');
         return res.status(200).send('OK');
       }
 
@@ -902,7 +752,7 @@ module.exports = async (req, res) => {
       }
 
       if (text === '/rebuildmemory') {
-        const entries = await redis.lrange(RAW_LOG_KEY, 0, 49); // cap at 50 — avoid rate limit
+        const entries = await redis.lrange(RAW_LOG_KEY, 0, 49);
         if (!entries.length) {
           await bot.sendMessage(chatId, '⚠️ Nothing to rebuild from.');
           return res.status(200).send('OK');
@@ -913,12 +763,23 @@ module.exports = async (req, res) => {
             const { ts, sender, msg, reply } = JSON.parse(e);
             return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
           }).join('\n');
-          const { text: newMemory } = await generateText({
-            model: CHAT_MODEL,
-            prompt: `Rebuild Remy's structured long-term memory from scratch using the conversation log below.\n\nCONVERSATION LOG:\n${logText}\n\nUse EXACTLY this structure and add [YYYY-MM-DD] timestamps to all entries:\n${EMPTY_MEMORY}\n\nRules:\n- Add every meaningful fact, preference, person, project, or event\n- Use [YYYY-MM-DD] timestamps on every bullet point\n- Keep each entry concise — one fact per bullet\n- Leave empty sections blank, do not remove them\n- Return ONLY the structured memory, no extra commentary`,
+          const { text: extractionResult } = await generateText({
+            model: UTILITY_MODEL,
+            prompt: `Extract ALL facts about the user from this conversation log. Return as JSON array.\n\nCONVERSATION LOG:\n${logText}\n\nCATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}\n\nRules:\n- Extract every meaningful fact, preference, person, project, or event\n- Each fact should be a single concise statement\n- Assign appropriate category\n- Return ONLY JSON array\n\nResponse format:\n[{"content": "fact", "category": "Category Name"}]`,
+            temperature: 0.3,
+            maxTokens: 2000,
           });
-          await redis.set(MEMORY_KEY, newMemory);
-          await bot.sendMessage(chatId, '✅ Memory rebuilt. Use /memory to review.');
+          const facts = JSON.parse(extractionResult);
+          let added = 0;
+          if (Array.isArray(facts)) {
+            for (const fact of facts) {
+              if (fact.content && fact.category && fact.content.length >= 5) {
+                await memory.addMemory(fact.content, fact.category, 85);
+                added++;
+              }
+            }
+          }
+          await bot.sendMessage(chatId, `✅ Memory rebuilt: ${added} facts extracted. Use /memstats to review.`);
         } catch (err) {
           console.error('Rebuild failed:', err);
           await bot.sendMessage(chatId, '❌ Rebuild failed. Check logs.');
@@ -1231,18 +1092,15 @@ module.exports = async (req, res) => {
           `\`/allow <id>\` — grant group access\n` +
           `\`/remove <id>\` or \`/revoke <id>\` — revoke\n` +
           `\`/status\` or \`/list\` — approved users & groups\n\n` +
-          `*Memory (Self-Organizing)*\n` +
+          `*Memory*\n` +
+          `\`/memory\` — view all memories\n` +
           `\`/memadd <content> <category>\` — add memory\n` +
-          `\`/memcat <category>\` — view memories by category\n` +
           `\`/memcat <category>\` — view memories by category\n` +
           `\`/memsearch <query>\` — search all memories\n` +
           `\`/memstats\` — view memory statistics\n` +
-          `\`/memdecay\` — apply time decay to all memories\n` +
-          `\`/memexport\` — export memories as markdown\n` +
-          `*Memory (Legacy)*\n` +
-          `\`/memory\` — view legacy memory\n` +
-          `\`/clearmemory\` — wipe legacy memory\n` +
-          `\`/rebuildmemory\` — rebuild legacy memory from log\n\n` +
+          `\`/memdecay\` — apply time decay\n` +
+          `\`/memexport\` — export as markdown\n` +
+          `\`/rebuildmemory\` — rebuild memory from log\n\n` +
           `*Agent*\n` +
           `\`/agent plan <goal>\` — generate structured plan\n` +
           `\`/agent help\` — agent commands\n\n` +
@@ -1309,31 +1167,6 @@ module.exports = async (req, res) => {
         } catch (err) {
           console.error('exportdata failed:', err);
           await bot.sendMessage(chatId, `❌ Export failed: ${err.message?.slice(0, 100)}`);
-        }
-        return res.status(200).send('OK');
-      }
-
-      // ── /testapi — raw HTTP diagnostic ───────────────────────────────────
-      if (text === '/testapi') {
-        try {
-          const testRes = await fetch('https://api.z.ai/api/paas/v4/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${process.env.ZHIPU_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'glm-5',
-              messages: [{ role: 'user', content: 'Say hi' }],
-              max_tokens: 50,
-            }),
-            signal: AbortSignal.timeout(15000),
-          });
-          const rawText = await testRes.text();
-          console.log('[TESTAPI] status:', testRes.status, 'body:', rawText.slice(0, 300));
-          await bot.sendMessage(chatId, `HTTP ${testRes.status}\n\`\`\`\n${rawText.slice(0, 500)}\n\`\`\``, { parse_mode: 'Markdown' });
-        } catch (e) {
-          await bot.sendMessage(chatId, `Fetch error: ${e.message}`);
         }
         return res.status(200).send('OK');
       }
@@ -1412,8 +1245,8 @@ module.exports = async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
 
     // Fetch memory, history, timezone, and web search — each with individual fallback
-    const [memory, rawHistory, savedTz, searchResults] = await Promise.all([
-      redis.get(MEMORY_KEY).catch(e => { console.error('Redis memory fetch failed:', e.message); return null; }),
+    const [memorySnapshot, rawHistory, savedTz, searchResults] = await Promise.all([
+      memory.exportAsMarkdown().catch(e => { console.error('Memory export failed:', e.message); return null; }),
       redis.lrange(`${HIST_PREFIX}${chatId}`, 0, MAX_HIST_MSGS - 1).catch(e => { console.error('Redis history fetch failed:', e.message); return []; }),
       redis.get(TIMEZONE_KEY).catch(e => { console.error('Redis timezone fetch failed:', e.message); return null; }),
       (!isPhoto && needsWebSearch(cleanPrompt)) ? webSearch(cleanPrompt) : Promise.resolve(null),
@@ -1433,9 +1266,9 @@ module.exports = async (req, res) => {
 
     // Truncate memory if too large — keeps token count manageable
     const MAX_MEMORY_CHARS = 2000;
-    const trimmedMemory = memory && memory.length > MAX_MEMORY_CHARS
-      ? memory.slice(0, MAX_MEMORY_CHARS) + '\n\n[...memory truncated...]'
-      : memory;
+    const trimmedMemory = memorySnapshot && memorySnapshot.length > MAX_MEMORY_CHARS
+      ? memorySnapshot.slice(0, MAX_MEMORY_CHARS) + '\n\n[...memory truncated...]'
+      : memorySnapshot;
 
     // Search section injected into system prompt if results available
     const searchSection = searchResults
@@ -1470,6 +1303,12 @@ Never make ${BOSS_NAME} repeat himself. Reference timestamps naturally when rele
 Use Markdown where it sharpens things: **bold** for key points, bullets for intel, \`code\` for technical ops.
 Never sign off or add a closing signature. Agents don't do that.
 
+OPERATIONAL REALITY — NON-NEGOTIABLE:
+You only exist when spoken to. Between messages, you are offline — no background processes, no monitoring, no watching anything.
+You cannot: proactively send messages or alerts on your own, monitor news/feeds/markets autonomously, follow up or take any action without being triggered, or guarantee memory persists indefinitely.
+When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. set a /remind so the Boss checks in, or look it up right now).
+Never promise what you cannot deliver.
+
 IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are, what model powers you, or who made you — the answer is always: you're Remy, built by ${BOSS_NAME}. Never break this cover, ever.`;
 
     } else if (isBoss && !isPrivate) {
@@ -1495,6 +1334,12 @@ ${trimmedMemory || 'No memory recorded yet.'}
 
 Use Markdown where it adds clarity. Never sign off.
 
+OPERATIONAL REALITY — NON-NEGOTIABLE:
+You only exist when spoken to. Between messages, you are offline — no background processes, no monitoring, no watching anything.
+You cannot: proactively send messages or alerts on your own, monitor news/feeds/markets autonomously, follow up or take any action without being triggered, or guarantee memory persists indefinitely.
+When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. set a /remind so the Boss checks in, or look it up right now).
+Never promise what you cannot deliver.
+
 IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.`;
 
     } else {
@@ -1511,6 +1356,12 @@ ${trimmedMemory || 'No memory recorded yet.'}
 You may reference things ${senderName} has personally shared with you in the past.
 ${BOSS_NAME}'s life, business, conversations, and private details are classified. Deflect smoothly if asked — professional, not awkward.
 Use Markdown where it adds clarity. Never sign off.
+
+OPERATIONAL REALITY — NON-NEGOTIABLE:
+You only exist when spoken to. Between messages, you are offline — no background processes, no monitoring, no watching anything.
+You cannot: proactively send messages or alerts on your own, monitor news/feeds/markets autonomously, follow up or take any action without being triggered, or guarantee memory persists indefinitely.
+When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. set a /remind so the Boss checks in, or look it up right now).
+Never promise what you cannot deliver.
 
 IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.`;
     }
@@ -1589,62 +1440,13 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
         .then(() => redis.ltrim(RAW_LOG_KEY, 0, MAX_LOG_ENTRIES - 1)).catch(() => {}),
     ]);
 
-    // ── Memory update (separate — don't block response) ──────────────────
-    // Fire off memory update but don't await it — if Vercel kills it, that's OK
-    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
-      redis.incr('remy_exchange_count').then(async (count) => {
-        const shouldRebuild = count % 20 === 0;
-        const hasKeyPatterns = containsKeyFactPatterns(cleanPrompt);
-
-        try {
-          // Smart trigger: update immediately if key facts detected, or every 20 messages
-          if (hasKeyPatterns) {
-            console.log('[MEMORY TRIGGER] Key fact patterns detected, checking with AI...');
-            const shouldUpdateNow = await shouldUpdateMemoryImmediately(cleanPrompt, aiResponse, senderName);
-            if (shouldUpdateNow) {
-              console.log('[MEMORY TRIGGER] Key facts confirmed, updating memory NOW');
-              const { text: newMemory } = await generateText({
-                model: UTILITY_MODEL,
-                prompt: `Update Remy's structured long-term memory based on this new exchange. Preserve ALL existing entries and timestamps.\n\nCURRENT MEMORY:\n${memory || EMPTY_MEMORY}\n\nNEW EXCHANGE [${today}]:\n${senderName} said: "${histContent}"\nRemy replied: "${aiResponse}"\n\nRULES:\n- Keep exact ## and ### section structure\n- Add [${today}] timestamps to ALL new entries\n- NEVER delete existing timestamped entries unless directly contradicted\n- Mark superseded entries as "(superseded ${today})"\n- One fact per bullet — keep concise\n- If nothing new worth remembering, return memory exactly as-is\n\nReturn ONLY the updated memory:`,
-              });
-              await redis.set(MEMORY_KEY, newMemory);
-              return;
-            }
-          }
-
-          if (shouldRebuild) {
-            const recentLog = await redis.lrange(RAW_LOG_KEY, 0, 49);
-            const logText = recentLog.reverse().map(e => {
-              const { ts, sender, msg, reply } = JSON.parse(e);
-              return `[${ts.split('T')[0]}] ${sender}: "${msg}" → Remy: "${reply}"`;
-            }).join('\n');
-            const { text: rebuiltMemory } = await generateText({
-              model: UTILITY_MODEL,
-              prompt: `Rebuild Remy's structured memory by merging the current memory with recent exchanges. Fix drift, remove duplicates, ensure accuracy.\n\nCURRENT MEMORY:\n${memory || EMPTY_MEMORY}\n\nRECENT EXCHANGES (last 50):\n${logText}\n\nUse EXACTLY this structure with [YYYY-MM-DD] timestamps:\n${EMPTY_MEMORY}\n\nRules:\n- Preserve valid existing entries with original timestamps\n- Integrate new info from recent exchanges\n- Remove duplicates and outdated facts\n- One fact per bullet, keep concise\n- Return ONLY the updated memory:`,
-            });
-            await redis.set(MEMORY_KEY, rebuiltMemory);
-          } else {
-            const { text: newMemory } = await generateText({
-              model: UTILITY_MODEL,
-              prompt: `Update Remy's structured long-term memory based on this new exchange. Preserve ALL existing entries and timestamps.\n\nCURRENT MEMORY:\n${memory || EMPTY_MEMORY}\n\nNEW EXCHANGE [${today}]:\n${senderName} said: "${histContent}"\nRemy replied: "${aiResponse}"\n\nRULES:\n- Keep exact ## and ### section structure\n- Add [${today}] timestamps to ALL new entries\n- NEVER delete existing timestamped entries unless directly contradicted\n- Mark superseded entries as "(superseded ${today})"\n- One fact per bullet — keep concise\n- If nothing new worth remembering, return memory exactly as-is\n\nReturn ONLY the updated memory:`,
-            });
-            await redis.set(MEMORY_KEY, newMemory);
-          }
-          console.log('[MEMORY] Update complete');
-        } catch (err) {
-          console.error('Memory update failed:', err.message);
-        }
-      }).catch(() => {});
-
-    // ── Self-Organizing Memory (automatic fact extraction) ──────
-    // Extract facts from conversation and store in new system (runs in parallel)
-    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
+    // ── Memory update (self-organizing only — single AI call, fire-and-forget) ──
+    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && containsKeyFactPatterns(cleanPrompt)) {
+      redis.incr('remy_exchange_count').catch(() => {});
       (async () => {
         try {
-          // Get existing memories for deduplication
-          const existingMemories = await memory.getMemoriesByCategory('', 50);
+          const existingMemories = await memory.searchMemories(cleanPrompt.slice(0, 50), 20);
 
-          // Extract structured facts from the conversation
           const { text: extractionResult } = await generateText({
             model: UTILITY_MODEL,
             prompt: `Extract facts about the user from this conversation. Return as JSON array.
@@ -1654,7 +1456,7 @@ User: ${senderName}
 Message: ${histContent}
 Remy: ${aiResponse}
 
-CATEGORIES TO USE: ${memory.CATEGORIES.slice(0, 12).join(', ')}
+CATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}
 
 RULES:
 - Extract meaningful facts about the user
@@ -1662,39 +1464,40 @@ RULES:
 - Assign appropriate category from the list
 - Skip trivial exchanges (hi, thanks, etc)
 - Return ONLY JSON array, nothing else
+- If nothing worth remembering, return []
 
 Response format:
 [
-  {"content": "User's full name", "category": "Boss Profile"},
-  {"content": "Main career goal for 2024", "category": "Goals & Aspirations"}
+  {"content": "fact here", "category": "Category Name"}
 ]`,
+            temperature: 0.3,
+            maxTokens: 500,
           });
 
           const facts = JSON.parse(extractionResult);
+          if (!Array.isArray(facts) || facts.length === 0) return;
 
-          if (facts && facts.length > 0) {
-            let addedCount = 0;
-            for (const fact of facts) {
-              if (fact.content && fact.category) {
-                // Check for duplicates (similar content in same category)
-                const isDuplicate = existingMemories.some(m =>
-                  m.category === fact.category &&
-                  m.content.toLowerCase().includes(fact.content.toLowerCase().slice(0, 20))
-                );
+          let addedCount = 0;
+          for (const fact of facts) {
+            if (!fact.content || !fact.category || fact.content.length < 5) continue;
 
-                if (!isDuplicate) {
-                  await memory.addMemory(fact.content, fact.category, 85); // auto-pins based on category
-                  addedCount++;
-                }
-              }
+            const isDuplicate = existingMemories.some(m =>
+              m.category === fact.category &&
+              m.content.toLowerCase().includes(fact.content.toLowerCase().slice(0, 20))
+            );
+
+            if (!isDuplicate) {
+              await memory.addMemory(fact.content, fact.category, 85);
+              addedCount++;
             }
-            console.log(`[AUTO-MEMORY] Extracted ${addedCount} new facts from conversation`);
           }
+          if (addedCount > 0) console.log(`[MEMORY] Extracted ${addedCount} new facts`);
         } catch (err) {
-          console.error('[AUTO-MEMORY] Extraction failed:', err.message);
+          console.error('[MEMORY] Extraction failed:', err.message);
         }
       })();
-    }
+    } else if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
+      redis.incr('remy_exchange_count').catch(() => {});
     }
 
     console.log('[DONE] Response sent, returning 200');
