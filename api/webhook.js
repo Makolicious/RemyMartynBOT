@@ -3,6 +3,13 @@ const { generateText } = require('ai');
 
 const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
+
+// Fallback model — Anthropic Sonnet 4.6 (used when GLM fails)
+let FALLBACK_MODEL = null;
+if (process.env.ANTHROPIC_API_KEY) {
+  const { anthropic } = require('@ai-sdk/anthropic');
+  FALLBACK_MODEL = anthropic('claude-sonnet-4-6-20250514');
+}
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
 const memory = require('./memory');  // Self-organizing memory system
@@ -1442,9 +1449,10 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
       currentMessage = { role: 'user', content: taggedPrompt };
     }
 
-    // ── AI call ──────────────────────────────────────────────────────────
+    // ── AI call (primary: GLM-4.5, fallback: Sonnet 4.6) ──────────────
     console.log(`[AI] Calling GLM-4.5 | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
     const aiStartTime = Date.now();
+    const aiMessages = [...history, currentMessage];
 
     let aiResponse;
     try {
@@ -1454,7 +1462,7 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
         const result = await generateText({
           model: CHAT_MODEL,
           system: systemPrompt,
-          messages: [...history, currentMessage],
+          messages: aiMessages,
           abortSignal: abortController.signal,
         });
         aiResponse = result.text;
@@ -1462,14 +1470,41 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
       } finally {
         clearTimeout(aiTimeout);
       }
-    } catch (aiErr) {
-      console.error(`[AI] FAILED after ${Date.now() - aiStartTime}ms:`, aiErr.name, aiErr.message);
-      if (aiErr.cause) console.error('[AI] Cause:', aiErr.cause);
-      const msg = aiErr.name === 'AbortError'
-        ? '⏱️ Took too long to think that one through. Try asking again or simplify the question.'
-        : `⚠️ My brain glitched. (${aiErr.message?.slice(0, 80)})`;
-      await bot.sendMessage(chatId, msg).catch(() => {});
-      return res.status(200).send('OK');
+    } catch (primaryErr) {
+      console.error(`[AI] GLM-4.5 FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
+
+      // Fallback to Sonnet 4.6 if available
+      if (FALLBACK_MODEL) {
+        console.log('[AI] Falling back to Sonnet 4.6...');
+        const fallbackStart = Date.now();
+        try {
+          const abortController2 = new AbortController();
+          const fallbackTimeout = setTimeout(() => abortController2.abort(), 50000);
+          try {
+            const result = await generateText({
+              model: FALLBACK_MODEL,
+              system: systemPrompt,
+              messages: aiMessages,
+              abortSignal: abortController2.signal,
+            });
+            aiResponse = result.text;
+            console.log(`[AI] Sonnet 4.6 fallback success in ${Date.now() - fallbackStart}ms`);
+          } finally {
+            clearTimeout(fallbackTimeout);
+          }
+        } catch (fallbackErr) {
+          console.error(`[AI] Sonnet 4.6 ALSO FAILED after ${Date.now() - fallbackStart}ms:`, fallbackErr.name, fallbackErr.message);
+          const msg = '⚠️ Both my primary and backup brains are down. Try again in a minute.';
+          await bot.sendMessage(chatId, msg).catch(() => {});
+          return res.status(200).send('OK');
+        }
+      } else {
+        const msg = primaryErr.name === 'AbortError'
+          ? '⏱️ Took too long to think that one through. Try asking again or simplify the question.'
+          : `⚠️ My brain glitched. (${primaryErr.message?.slice(0, 80)})`;
+        await bot.sendMessage(chatId, msg).catch(() => {});
+        return res.status(200).send('OK');
+      }
     }
 
     // Send response to user
