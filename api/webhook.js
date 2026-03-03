@@ -260,6 +260,56 @@ function containsKeyFactPatterns(text) {
   return patterns.some(p => p.test(text));
 }
 
+// ── Context-aware memory builder ─────────────────────────────────────────────
+// Fetches permanent category memories (always relevant) + keyword-matched
+// memories for the current message. Returns compact formatted string.
+async function buildContextMemory(currentMessage) {
+  const MAX_CHARS = 1000;
+  const PERMANENT_CATS = memory.PERMANENT_CATEGORIES;
+
+  try {
+    // Fetch permanent categories (top 3 per cat) + search in parallel
+    const [permanentResults, searchResults] = await Promise.all([
+      Promise.all(PERMANENT_CATS.map(cat => memory.getMemoriesByCategory(cat, 3).catch(() => []))),
+      (typeof currentMessage === 'string' ? memory.searchMemories(currentMessage.slice(0, 100), 8) : Promise.resolve([])).catch(() => []),
+    ]);
+
+    // Flatten permanent memories and collect IDs for dedup
+    const permanentMemories = permanentResults.flat();
+    const permanentIds = new Set(permanentMemories.map(m => m.id));
+
+    // Only keep search results not already in permanent set
+    const extraMemories = searchResults.filter(m => !permanentIds.has(m.id));
+
+    // Group all memories by category for compact formatting
+    const grouped = {};
+    for (const mem of [...permanentMemories, ...extraMemories]) {
+      if (!grouped[mem.category]) grouped[mem.category] = [];
+      grouped[mem.category].push(mem.content);
+    }
+
+    // Format as compact lines: [Category] fact1 | fact2 | fact3
+    const lines = Object.entries(grouped).map(([cat, facts]) => {
+      const factsStr = facts.join(' | ');
+      return `[${cat}] ${factsStr}`;
+    });
+
+    const result = lines.join('\n');
+    if (result.length <= MAX_CHARS) return result;
+    const lines2 = result.split('\n');
+    let truncated = '';
+    for (const line of lines2) {
+      if ((truncated + '\n' + line).length > MAX_CHARS) break;
+      truncated += (truncated ? '\n' : '') + line;
+    }
+    return truncated + '\n[...memory truncated...]';
+
+  } catch (e) {
+    console.error('[MEMORY] buildContextMemory failed:', e.message);
+    return null;
+  }
+}
+
 // ── Callback query handler (inline keyboard button taps) ─────────────────────
 async function handleCallbackQuery(query, res) {
   const chatId    = query.message.chat.id;
