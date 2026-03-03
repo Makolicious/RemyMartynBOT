@@ -6,6 +6,7 @@
 const Redis = require('ioredis');
 const {
   CATEGORIES,
+  PERMANENT_CATEGORIES,
   createMemory,
   normalizeCategory,
   validateMemory
@@ -417,5 +418,6 @@ module.exports = {
   pruneMemories,
   getStats,
   exportAsMarkdown,
-  CATEGORIES
+  CATEGORIES,
+  PERMANENT_CATEGORIES
 };
