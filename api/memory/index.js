@@ -406,20 +406,9 @@ async function exportAsMarkdown() {
   return output.join('\n');
 }
 
-/**
- * Close Redis connection
- */
-async function close() {
-  if (redis) {
-    await redis.quit();
-    redis = null;
-  }
-}
-
 module.exports = {
   addMemory,
   getMemory,
-  boostMemory,
   getMemoriesByCategory,
   searchMemories,
   updateMemory,
@@ -427,8 +416,6 @@ module.exports = {
   applyDecay,
   pruneMemories,
   getStats,
-  incrementStat,
   exportAsMarkdown,
-  close,
   CATEGORIES
 };
