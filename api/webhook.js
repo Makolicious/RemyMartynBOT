@@ -1303,6 +1303,25 @@ module.exports = async (req, res) => {
       : (voiceTranscript || text);
     const cleanPrompt = rawPrompt.replace(new RegExp(BOT_USERNAME, 'i'), '').trim() || 'Hello!';
 
+    // ── Natural language reminder detection (Boss only, no AI call) ──────
+    if (isBoss && !isPhoto) {
+      const reminderMatch = cleanPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(in\s+\d+\s*(?:m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?.+)$/i);
+      if (reminderMatch) {
+        const parsed = parseReminderTime(reminderMatch[1]);
+        if (parsed) {
+          await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message }));
+          const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+          const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
+            timeZone: tz,
+            dateStyle: 'medium',
+            timeStyle: 'short',
+          });
+          await bot.sendMessage(chatId, `⏰ Reminder set for *${timeStr}*: "${parsed.message}"`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+      }
+    }
+
     // Fetch memory, history, timezone, and web search — each with individual fallback
     const [memorySnapshot, rawHistory, savedTz, searchResults] = await Promise.all([
       buildContextMemory(cleanPrompt),
