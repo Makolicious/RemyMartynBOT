@@ -172,8 +172,12 @@ async function webSearch(query) {
 // Heuristic: does this message need live web data?
 function needsWebSearch(text) {
   if (!SERPER_KEY) return false;
-  // Must have a real search keyword — bare "?" alone doesn't trigger
-  return /\b(who|what|when|where|how|why|latest|current|today|news|price|weather|stock|rate|score|search|look up|find|tell me about)\b/i.test(text);
+  const lower = text.toLowerCase();
+  // Block conversational patterns that look like questions but aren't searches
+  const conversational = /how are you|what'?s up|what do you think|why not|where were we|what about you|how'?s it going|how come you|what should i|how do you feel/i;
+  if (conversational.test(lower)) return false;
+  // Require factual follow-up words for common question words, or direct search intents
+  return /\b(who (is|was|are)|what (is|are|was|were|does)|when (did|is|was|does)|where (is|are|can|do)|how (to|much|many|does|do|did)|why (did|does|is|are|do)|latest|current|today|news|price|weather|stock|rate|score|search|look up|find|tell me about)\b/i.test(text);
 }
 
 // Heuristic: is this message too trivial to update memory?
@@ -1311,6 +1315,15 @@ module.exports = async (req, res) => {
     });
 
     const history = rawHistory.map(e => JSON.parse(e)).reverse();
+
+    // Compress older history — last 4 messages (2 exchanges) full, older ones truncated
+    const FULL_HISTORY_TAIL = 4;
+    const TRUNCATE_LEN = 120;
+    for (let i = 0; i < history.length - FULL_HISTORY_TAIL; i++) {
+      if (history[i].content && history[i].content.length > TRUNCATE_LEN) {
+        history[i] = { ...history[i], content: history[i].content.slice(0, TRUNCATE_LEN) + '...' };
+      }
+    }
 
     const contextMemory = memorySnapshot;
 
