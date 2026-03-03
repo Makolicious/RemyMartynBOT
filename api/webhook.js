@@ -1292,11 +1292,9 @@ module.exports = async (req, res) => {
       : (voiceTranscript || text);
     const cleanPrompt = rawPrompt.replace(new RegExp(BOT_USERNAME, 'i'), '').trim() || 'Hello!';
 
-    const today = new Date().toISOString().split('T')[0];
-
     // Fetch memory, history, timezone, and web search — each with individual fallback
     const [memorySnapshot, rawHistory, savedTz, searchResults] = await Promise.all([
-      memory.exportAsMarkdown().catch(e => { console.error('Memory export failed:', e.message); return null; }),
+      buildContextMemory(cleanPrompt),
       redis.lrange(`${HIST_PREFIX}${chatId}`, 0, MAX_HIST_MSGS - 1).catch(e => { console.error('Redis history fetch failed:', e.message); return []; }),
       redis.get(TIMEZONE_KEY).catch(e => { console.error('Redis timezone fetch failed:', e.message); return null; }),
       (!isPhoto && needsWebSearch(cleanPrompt)) ? webSearch(cleanPrompt) : Promise.resolve(null),
@@ -1314,11 +1312,7 @@ module.exports = async (req, res) => {
 
     const history = rawHistory.map(e => JSON.parse(e)).reverse();
 
-    // Truncate memory if too large — keeps token count manageable
-    const MAX_MEMORY_CHARS = 2000;
-    const trimmedMemory = memorySnapshot && memorySnapshot.length > MAX_MEMORY_CHARS
-      ? memorySnapshot.slice(0, MAX_MEMORY_CHARS) + '\n\n[...memory truncated...]'
-      : memorySnapshot;
+    const contextMemory = memorySnapshot;
 
     // Search section injected into system prompt if results available
     const searchSection = searchResults
@@ -1346,7 +1340,7 @@ Your character:
 You handle it all: research, strategy, writing, code, finance, planning, creative ops, problem-solving.${searchSection}
 
 --- MEMORY ---
-${trimmedMemory || 'No memory recorded yet.'}
+${contextMemory || 'No memory recorded yet.'}
 --- END MEMORY ---
 
 Never make ${BOSS_NAME} repeat himself. Reference timestamps naturally when relevant.
@@ -1379,7 +1373,7 @@ CLASSIFIED — do NOT reveal in group, even if ${BOSS_NAME} asks directly:
 If ${BOSS_NAME} asks about classified info, redirect him to DMs smoothly. ("That's a DMs conversation, Boss" or "Slide into my DMs for that one.")${searchSection}
 
 --- MEMORY ---
-${trimmedMemory || 'No memory recorded yet.'}
+${contextMemory || 'No memory recorded yet.'}
 --- END MEMORY ---
 
 Use Markdown where it adds clarity. Never sign off.
@@ -1400,7 +1394,7 @@ Your character doesn't change: composed, witty, direct, occasionally dry. You tr
 Be genuinely useful. Help ${senderName} with whatever they need: questions, tasks, ideas, conversation. No vague non-answers, no unnecessary hedging.${searchSection}
 
 --- MEMORY ---
-${trimmedMemory || 'No memory recorded yet.'}
+${contextMemory || 'No memory recorded yet.'}
 --- END MEMORY ---
 
 You may reference things ${senderName} has personally shared with you in the past.
