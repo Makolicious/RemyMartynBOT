@@ -602,14 +602,28 @@ async function handleInlineQuery(query, res) {
   // Analyze query complexity for adaptive response
   const { complexity, maxTokens } = analyzeQueryComplexity(queryText);
 
+  // Get current date/time
+  const savedTz = await redis.get(TIMEZONE_KEY).catch(() => null);
+  const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'UTC';
+  const now = new Date();
+  const currentTime = now.toLocaleString('en-US', {
+    timeZone: bossTimezone,
+    weekday: 'short',
+    year:    'numeric',
+    month:   'short',
+    day:     'numeric',
+    hour:    '2-digit',
+    minute:  '2-digit',
+  });
+
   // Generate dynamic system prompt based on complexity
   let systemPrompt;
   if (complexity === 'simple') {
-    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 1-2 sentences. No fluff.`;
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Current time: ${currentTime}. Answer in 1-2 sentences. No fluff.`;
   } else if (complexity === 'medium') {
-    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 2-3 sentences. No fluff.`;
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Current time: ${currentTime}. Answer in 2-3 sentences. No fluff.`;
   } else {
-    systemPrompt = `You are Remy — a sharp, concise AI assistant. Answer in 3-5 sentences. No fluff.`;
+    systemPrompt = `You are Remy — a sharp, concise AI assistant. Current time: ${currentTime}. Answer in 3-5 sentences. No fluff.`;
   }
 
   console.log(`[INLINE] Complexity: ${complexity}, maxTokens: ${maxTokens}, Query: "${queryText.slice(0, 50)}"...`);
@@ -824,8 +838,10 @@ module.exports = async (req, res) => {
             const { ts, sender, msg, reply } = JSON.parse(e);
             return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
           }).join('\n');
+          const currentDate = new Date().toISOString().split('T')[0];
           const { text: extractionResult } = await generateText({
             model: UTILITY_MODEL,
+            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately.`,
             prompt: `Extract ALL facts about the user from this conversation log. Return as JSON array.\n\nCONVERSATION LOG:\n${logText}\n\nCATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}\n\nRules:\n- Extract every meaningful fact, preference, person, project, or event\n- Each fact should be a single concise statement\n- Assign appropriate category\n- Return ONLY JSON array\n\nResponse format:\n[{"content": "fact", "category": "Category Name"}]`,
             temperature: 0.3,
             maxTokens: 2000,
@@ -1331,9 +1347,11 @@ module.exports = async (req, res) => {
     ]);
 
     const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'UTC';
-    const localTime = new Date().toLocaleString('en-US', {
+    const now = new Date();
+    const localTime = now.toLocaleString('en-US', {
       timeZone: bossTimezone,
       weekday: 'short',
+      year:    'numeric',
       month:   'short',
       day:     'numeric',
       hour:    '2-digit',
@@ -1427,6 +1445,8 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
 
     } else {
       systemPrompt = `You are Remy — a sharp AI agent created by ${BOSS_NAME}. You're speaking with ${senderName}, a vetted contact who has been granted access.
+
+Current time: ${localTime}
 
 Your character doesn't change: composed, witty, direct, occasionally dry. You treat ${senderName} with respect — they've been cleared — but your loyalty is to the Boss and the Boss alone.
 
@@ -1558,8 +1578,10 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
         try {
           const existingMemories = await memory.searchMemories(cleanPrompt.slice(0, 50), 20);
 
+          const currentDate = new Date().toISOString().split('T')[0];
           const { text: extractionResult } = await generateText({
             model: UTILITY_MODEL,
+            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately.`,
             prompt: `Extract facts about the user from this conversation. Return as JSON array.
 
 CONVERSATION:
