@@ -45,7 +45,6 @@ function getRedis() {
 
 // ── Redis Keys ───────────────────────────────────────────────────────────────
 
-const MEMORY_KEY      = 'remy_memory';
 const RAW_LOG_KEY     = 'remy_raw_log';
 const APPROVED_KEY    = 'approved_users';
 const BOSS_GRP_PREFIX = 'boss_group_';
@@ -105,49 +104,21 @@ module.exports = async (req, res) => {
 
     // ── GET /stats ───────────────────────────────────────────────────
     if (path === '/stats' && req.method === 'GET') {
-      const [logLen, memStr, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
+      const [logLen, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
         db.llen(RAW_LOG_KEY),
-        db.get(MEMORY_KEY),
         db.scard(APPROVED_KEY),
         db.get('remy_exchange_count'),
         db.llen(NOTES_KEY),
         db.zcard(REMINDERS_KEY),
       ]);
 
-      const memKB = memStr ? (memStr.length / 1024).toFixed(1) : 0;
-
       return jsonResponse(res, {
         totalExchanges: exchangeCount || 0,
         logEntries: logLen,
-        memorySize: `${memKB} KB`,
-        memoryLength: memStr?.length || 0,
         approvedUsers: approvedCount,
         savedNotes: notesLen,
         pendingReminders: remindersLen,
       });
-    }
-
-    // ── GET /memory ──────────────────────────────────────────────────
-    if (path === '/memory' && req.method === 'GET') {
-      const memory = await db.get(MEMORY_KEY);
-      // Return raw memory for editing (formatted version is read-only display)
-      return jsonResponse(res, {
-        memory: memory || '',
-        length: memory?.length || 0,
-      });
-    }
-
-    // ── PUT /memory ──────────────────────────────────────────────────
-    if (path === '/memory' && req.method === 'PUT') {
-      const body = req.body || {};
-      const newMemory = body.memory;
-
-      if (!newMemory || typeof newMemory !== 'string') {
-        return jsonResponse(res, { error: 'Invalid memory format' }, 400);
-      }
-
-      await db.set(MEMORY_KEY, newMemory);
-      return jsonResponse(res, { success: true, message: 'Memory updated' });
     }
 
     // ── GET /notes ───────────────────────────────────────────────────
