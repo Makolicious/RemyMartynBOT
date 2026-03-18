@@ -1,7 +1,7 @@
 const { zai } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 
-const CHAT_MODEL    = zai('glm-4.7');  // Remy's main chat model
+const CHAT_MODEL    = zai('glm-4.7', { think: { type: 'disable' } });  // Remy's main chat model (thinking disabled — conversational, not reasoning)
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 
 // Fallback model — Anthropic Sonnet 4.6 (used when GLM fails)
@@ -1511,7 +1511,7 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
     let aiResponse;
     try {
       const abortController = new AbortController();
-      const aiTimeout = setTimeout(() => abortController.abort(), 50000);
+      const aiTimeout = setTimeout(() => abortController.abort(), 25000);
       try {
         const result = await generateText({
           model: CHAT_MODEL,
@@ -1533,7 +1533,7 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
         const fallbackStart = Date.now();
         try {
           const abortController2 = new AbortController();
-          const fallbackTimeout = setTimeout(() => abortController2.abort(), 50000);
+          const fallbackTimeout = setTimeout(() => abortController2.abort(), 25000);
           try {
             const result = await generateText({
               model: FALLBACK_MODEL,
