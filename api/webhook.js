@@ -1,7 +1,7 @@
 const { zai } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 
-const CHAT_MODEL    = zai('glm-4.7-flash');  // Fast conversational model (no reasoning overhead)
+const CHAT_MODEL    = zai('glm-4-plus');  // Proven fast chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 
 // Fallback model — Anthropic Sonnet 4.6 (used when GLM fails)
@@ -1503,8 +1503,8 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
       currentMessage = { role: 'user', content: taggedPrompt };
     }
 
-    // ── AI call (primary: GLM-4.7-Flash, fallback: Sonnet 4.6) ──────────────
-    console.log(`[AI] Calling GLM-4.7-Flash | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
+    // ── AI call (primary: GLM-4-Plus, fallback: Sonnet 4.6) ──────────────
+    console.log(`[AI] Calling GLM-4-Plus | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
     const aiStartTime = Date.now();
     const aiMessages = [...history, currentMessage];
 
@@ -1520,12 +1520,12 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
           abortSignal: abortController.signal,
         });
         aiResponse = result.text;
-        console.log(`[AI] GLM-4.7-Flash success in ${Date.now() - aiStartTime}ms`);
+        console.log(`[AI] GLM-4-Plus success in ${Date.now() - aiStartTime}ms`);
       } finally {
         clearTimeout(aiTimeout);
       }
     } catch (primaryErr) {
-      console.error(`[AI] GLM-4.7-Flash FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
+      console.error(`[AI] GLM-4-Plus FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
 
       // Fallback to Sonnet 4.6 if available
       if (FALLBACK_MODEL) {
