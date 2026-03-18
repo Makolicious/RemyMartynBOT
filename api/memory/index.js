@@ -1,9 +1,12 @@
 /**
  * Self-Organizing Memory System
  * A lean, unconventional AI memory framework with importance decay and auto-organization
+ * Now with vector embeddings for semantic search
  */
 
 const Redis = require('ioredis');
+const { embed } = require('ai');
+const { zai } = require('zhipu-ai-provider');
 const {
   CATEGORIES,
   PERMANENT_CATEGORIES,
@@ -12,6 +15,9 @@ const {
   validateMemory
 } = require('./schema');
 
+// ── Embedding Model ──────────────────────────────────────────────────────
+const EMBEDDING_MODEL = zai.textEmbeddingModel('embedding-3', { dimensions: 256 });
+
 // ── Redis Keys ───────────────────────────────────────────────────────────
 const KEYS = {
   ALL: 'remy_memories_all',           // ZSET: importance -> memory_id
@@ -19,7 +25,8 @@ const KEYS = {
   CATEGORY: (cat) => `remy_mem_cat:${cat}`,  // SET: memory_ids in category
   ACCESSED: 'remy_mem_accessed_recent', // ZSET: timestamp -> memory_id (hot cache)
   STATS: 'remy_mem_stats',            // HASH: system stats
-  LAST_DECAY: 'remy_mem_last_decay'   // STRING: timestamp of last decay run
+  LAST_DECAY: 'remy_mem_last_decay',  // STRING: timestamp of last decay run
+  EMBEDDINGS: 'remy_mem_embeddings'   // HASH: memory_id -> JSON embedding vector
 };
 
 // ── Lazy Redis Connection ──────────────────────────────────────────────────
@@ -37,10 +44,114 @@ function getRedis() {
   return redis;
 }
 
+// ── Embedding Utilities ──────────────────────────────────────────────────
+
+/**
+ * Generate a 256-dim embedding vector for text using Zhipu embedding-3
+ */
+async function generateEmbedding(text) {
+  try {
+    const { embedding } = await embed({
+      model: EMBEDDING_MODEL,
+      value: text.slice(0, 500), // cap input length
+    });
+    return embedding; // number[]
+  } catch (err) {
+    console.error('[MEMORY] Embedding generation failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Cosine similarity between two vectors
+ */
+function cosineSimilarity(a, b) {
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB) || 1);
+}
+
+/**
+ * Semantic search — embed the query, cosine-sim against all stored embeddings,
+ * return top-k memories sorted by similarity
+ */
+async function semanticSearch(queryText, limit = 10) {
+  const db = getRedis();
+
+  // Embed the query
+  const queryVec = await generateEmbedding(queryText);
+  if (!queryVec) {
+    // Fallback to keyword search if embedding fails
+    return searchMemories(queryText, limit);
+  }
+
+  // Fetch all stored embeddings in one call
+  const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
+  if (!allEmbeddings || Object.keys(allEmbeddings).length === 0) {
+    return searchMemories(queryText, limit);
+  }
+
+  // Compute similarity for each memory
+  const scored = [];
+  for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
+    try {
+      const vec = JSON.parse(vecJson);
+      const sim = cosineSimilarity(queryVec, vec);
+      scored.push({ id: memId, similarity: sim });
+    } catch { /* skip corrupted entries */ }
+  }
+
+  // Sort by similarity descending, take top-k
+  scored.sort((a, b) => b.similarity - a.similarity);
+  const topIds = scored.slice(0, limit);
+
+  // Fetch full memory entries (no boost on search)
+  const results = [];
+  for (const { id, similarity } of topIds) {
+    if (similarity < 0.3) continue; // skip very low relevance
+    const mem = await getMemory(id, false);
+    if (mem) results.push({ ...mem, relevance: similarity });
+  }
+
+  return results;
+}
+
+/**
+ * Backfill embeddings for all existing memories that don't have one yet
+ */
+async function backfillEmbeddings() {
+  const db = getRedis();
+  const allIds = await db.zrevrange(KEYS.ALL, 0, -1);
+  const existingEmbeddings = await db.hkeys(KEYS.EMBEDDINGS);
+  const existingSet = new Set(existingEmbeddings);
+
+  let embedded = 0, failed = 0;
+  for (const id of allIds) {
+    if (existingSet.has(id)) continue;
+    const mem = await getMemory(id, false);
+    if (!mem) continue;
+
+    const vec = await generateEmbedding(`[${mem.category}] ${mem.content}`);
+    if (vec) {
+      await db.hset(KEYS.EMBEDDINGS, id, JSON.stringify(vec));
+      embedded++;
+    } else {
+      failed++;
+    }
+  }
+
+  console.log(`[MEMORY] Backfill complete: ${embedded} embedded, ${failed} failed, ${existingSet.size} already had embeddings`);
+  return { embedded, failed, skipped: existingSet.size };
+}
+
 // ── Core Operations ───────────────────────────────────────────────────────
 
 /**
- * Add a new memory entry
+ * Add a new memory entry (now also generates + stores an embedding)
  */
 async function addMemory(content, category, confidence = 80) {
   const db = getRedis();
@@ -58,7 +169,7 @@ async function addMemory(content, category, confidence = 80) {
     access_count: memory.access_count,
     decay_rate: memory.decay_rate,
     related_ids: JSON.stringify(memory.related_ids),
-    pinned: memory.pinned ? 'true' : 'false'  // Store pinned status
+    pinned: memory.pinned ? 'true' : 'false'
   });
 
   // Add to importance-sorted set
@@ -69,6 +180,13 @@ async function addMemory(content, category, confidence = 80) {
 
   // Add to recent access (as creation)
   await db.zadd(KEYS.ACCESSED, Date.now(), memory.id);
+
+  // Generate and store embedding (fire-and-forget, don't block on failure)
+  generateEmbedding(`[${memory.category}] ${memory.content}`)
+    .then(vec => {
+      if (vec) db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
+    })
+    .catch(() => {});
 
   // Update stats
   await incrementStat('total_memories');
@@ -266,11 +384,12 @@ async function deleteMemory(id) {
     return false;
   }
 
-  // Remove from all indexes
+  // Remove from all indexes (including embedding)
   await db.del(KEYS.ENTRY(id));
   await db.zrem(KEYS.ALL, id);
   await db.srem(KEYS.CATEGORY(mem.category), id);
   await db.zrem(KEYS.ACCESSED, id);
+  await db.hdel(KEYS.EMBEDDINGS, id);
 
   await incrementStat('deleted_memories');
 
@@ -412,6 +531,8 @@ module.exports = {
   getMemory,
   getMemoriesByCategory,
   searchMemories,
+  semanticSearch,
+  backfillEmbeddings,
   updateMemory,
   deleteMemory,
   applyDecay,

@@ -1,7 +1,7 @@
 const { zai } = require('zhipu-ai-provider');
 const { generateText } = require('ai');
 
-const CHAT_MODEL    = zai('glm-4.5');  // Remy's main chat model
+const CHAT_MODEL    = zai('glm-4.7');  // Remy's main chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 
 // Fallback model — Anthropic Sonnet 4.6 (used when GLM fails)
@@ -272,17 +272,20 @@ function containsKeyFactPatterns(text) {
 }
 
 // ── Context-aware memory builder ─────────────────────────────────────────────
-// Fetches permanent category memories (always relevant) + keyword-matched
-// memories for the current message. Returns compact formatted string.
+// Fetches permanent category memories (always relevant) + semantically matched
+// memories for the current message via vector embeddings.
 async function buildContextMemory(currentMessage) {
-  const MAX_CHARS = 1000;
+  const MAX_CHARS = 2000;
   const PERMANENT_CATS = memory.PERMANENT_CATEGORIES;
 
   try {
-    // Fetch permanent categories (top 3 per cat) + search in parallel
+    // Fetch permanent categories (top 3 per cat) + semantic search in parallel
     const [permanentResults, searchResults] = await Promise.all([
       Promise.all(PERMANENT_CATS.map(cat => memory.getMemoriesByCategory(cat, 3).catch(() => []))),
-      (typeof currentMessage === 'string' ? memory.searchMemories(currentMessage.slice(0, 100), 8) : Promise.resolve([])).catch(() => []),
+      (typeof currentMessage === 'string'
+        ? memory.semanticSearch(currentMessage.slice(0, 200), 10)
+        : Promise.resolve([])
+      ).catch(() => []),
     ]);
 
     // Flatten permanent memories and collect IDs for dedup
@@ -935,6 +938,17 @@ module.exports = async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // /backfill - generate embeddings for existing memories
+      if (text === '/backfill') {
+        await bot.sendMessage(chatId, '⏳ Generating embeddings for existing memories...');
+        const result = await memory.backfillEmbeddings();
+        await bot.sendMessage(chatId,
+          `✅ Embedding backfill complete:\n• Embedded: *${result.embedded}*\n• Failed: *${result.failed}*\n• Already had embeddings: *${result.skipped}*`,
+          { parse_mode: 'Markdown' }
+        );
+        return res.status(200).send('OK');
+      }
+
       // /memdecay - manually trigger decay
       if (text === '/memdecay') {
         await bot.sendMessage(chatId, '⏳ Applying time decay...');
@@ -1177,7 +1191,8 @@ module.exports = async (req, res) => {
           `\`/memstats\` — view memory statistics\n` +
           `\`/memdecay\` — apply time decay\n` +
           `\`/memexport\` — export as markdown\n` +
-          `\`/rebuildmemory\` — rebuild memory from log\n\n` +
+          `\`/rebuildmemory\` — rebuild memory from log\n` +
+          `\`/backfill\` — generate embeddings for existing memories\n\n` +
           `*Agent*\n` +
           `\`/agent plan <goal>\` — generate structured plan\n` +
           `\`/agent help\` — agent commands\n\n` +
@@ -1488,8 +1503,8 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
       currentMessage = { role: 'user', content: taggedPrompt };
     }
 
-    // ── AI call (primary: GLM-4.5, fallback: Sonnet 4.6) ──────────────
-    console.log(`[AI] Calling GLM-4.5 | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
+    // ── AI call (primary: GLM-4.7, fallback: Sonnet 4.6) ──────────────
+    console.log(`[AI] Calling GLM-4.7 | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
     const aiStartTime = Date.now();
     const aiMessages = [...history, currentMessage];
 
@@ -1505,12 +1520,12 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
           abortSignal: abortController.signal,
         });
         aiResponse = result.text;
-        console.log(`[AI] GLM-4.5 success in ${Date.now() - aiStartTime}ms`);
+        console.log(`[AI] GLM-4.7 success in ${Date.now() - aiStartTime}ms`);
       } finally {
         clearTimeout(aiTimeout);
       }
     } catch (primaryErr) {
-      console.error(`[AI] GLM-4.5 FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
+      console.error(`[AI] GLM-4.7 FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
 
       // Fallback to Sonnet 4.6 if available
       if (FALLBACK_MODEL) {
@@ -1572,11 +1587,11 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
     ]);
 
     // ── Memory update (self-organizing only — single AI call, fire-and-forget) ──
-    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && containsKeyFactPatterns(cleanPrompt)) {
+    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
       redis.incr('remy_exchange_count').catch(() => {});
       (async () => {
         try {
-          const existingMemories = await memory.searchMemories(cleanPrompt.slice(0, 50), 20);
+          const existingMemories = await memory.semanticSearch(cleanPrompt.slice(0, 200), 20);
 
           const currentDate = new Date().toISOString().split('T')[0];
           const { text: extractionResult } = await generateText({
@@ -1629,8 +1644,6 @@ Response format:
           console.error('[MEMORY] Extraction failed:', err.message);
         }
       })();
-    } else if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
-      redis.incr('remy_exchange_count').catch(() => {});
     }
 
     console.log('[DONE] Response sent, returning 200');
