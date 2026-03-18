@@ -1587,11 +1587,11 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
     ]);
 
     // ── Memory update (self-organizing only — single AI call, fire-and-forget) ──
-    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt)) {
+    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && (cleanPrompt.length > 80 || containsKeyFactPatterns(cleanPrompt))) {
       redis.incr('remy_exchange_count').catch(() => {});
       (async () => {
         try {
-          const existingMemories = await memory.semanticSearch(cleanPrompt.slice(0, 200), 20);
+          const existingMemories = await memory.searchMemories(cleanPrompt.slice(0, 50), 20);
 
           const currentDate = new Date().toISOString().split('T')[0];
           const { text: extractionResult } = await generateText({
