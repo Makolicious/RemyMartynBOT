@@ -186,7 +186,7 @@ async function addMemory(content, category, confidence = 80) {
     .then(vec => {
       if (vec) db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
     })
-    .catch(() => {});
+    .catch(err => console.error('[MEMORY] Embedding failed:', err.message));
 
   // Update stats
   await incrementStat('total_memories');

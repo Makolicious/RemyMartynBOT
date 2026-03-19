@@ -124,9 +124,11 @@ module.exports = async (req, res) => {
     // ── GET /notes ───────────────────────────────────────────────────
     if (path === '/notes' && req.method === 'GET') {
       const entries = await db.lrange(NOTES_KEY, 0, 99);
-      const notes = entries.map((e, i) => {
-        const { ts, text } = JSON.parse(e);
-        return { id: i + 1, timestamp: ts, text };
+      const notes = entries.flatMap((e, i) => {
+        try {
+          const { ts, text } = JSON.parse(e);
+          return [{ id: i + 1, timestamp: ts, text }];
+        } catch { console.error('[ADMIN] Corrupt note entry at index', i); return []; }
       });
       return jsonResponse(res, { notes });
     }
@@ -168,14 +170,16 @@ module.exports = async (req, res) => {
       const reminders = [];
 
       for (let i = 0; i < all.length; i += 2) {
-        const entry = JSON.parse(all[i]);
-        const score = parseInt(all[i + 1]);
-        reminders.push({
-          id: Math.floor(i / 2) + 1,
-          timestamp: score,
-          message: entry.message,
-          formattedDate: formatDate(new Date(score)),
-        });
+        try {
+          const entry = JSON.parse(all[i]);
+          const score = parseInt(all[i + 1]);
+          reminders.push({
+            id: Math.floor(i / 2) + 1,
+            timestamp: score,
+            message: entry.message,
+            formattedDate: formatDate(new Date(score)),
+          });
+        } catch { console.error('[ADMIN] Corrupt reminder entry at index', i / 2); }
       }
 
       return jsonResponse(res, { reminders });
@@ -220,17 +224,19 @@ module.exports = async (req, res) => {
       const limit = Math.min(parseInt(query.limit) || 50, 500);
 
       const entries = await db.lrange(RAW_LOG_KEY, 0, limit - 1);
-      const log = entries.map(e => {
-        const { ts, sender, msg, reply, isBoss, chat } = JSON.parse(e);
-        return {
-          timestamp: ts,
-          formattedDate: formatDate(ts),
-          sender,
-          isBoss,
-          chatType: chat,
-          message: msg,
-          reply: reply?.slice(0, 100) + (reply?.length > 100 ? '...' : ''),
-        };
+      const log = entries.flatMap(e => {
+        try {
+          const { ts, sender, msg, reply, isBoss, chat } = JSON.parse(e);
+          return [{
+            timestamp: ts,
+            formattedDate: formatDate(ts),
+            sender,
+            isBoss,
+            chatType: chat,
+            message: msg,
+            reply: reply?.slice(0, 100) + (reply?.length > 100 ? '...' : ''),
+          }];
+        } catch { console.error('[ADMIN] Corrupt log entry, skipping'); return []; }
       });
 
       return jsonResponse(res, { log, count: entries.length });

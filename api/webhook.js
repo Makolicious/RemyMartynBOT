@@ -171,7 +171,8 @@ async function webSearch(query) {
     const answer  = data.answerBox?.answer || data.answerBox?.snippet || '';
     const organic = data.organic?.slice(0, 4).map(r => `• ${r.title}: ${r.snippet}`).join('\n') || '';
     return [answer, organic].filter(Boolean).join('\n\n') || null;
-  } catch {
+  } catch (err) {
+    console.error('[SEARCH] Web search failed:', err.message);
     return null;
   }
 }
