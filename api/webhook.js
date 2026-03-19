@@ -1373,7 +1373,10 @@ module.exports = async (req, res) => {
       minute:  '2-digit',
     });
 
-    const history = rawHistory.map(e => JSON.parse(e)).reverse();
+    const history = rawHistory.flatMap(e => {
+      try { return [JSON.parse(e)]; }
+      catch { console.error('[HISTORY] Skipping corrupt entry'); return []; }
+    }).reverse();
 
     // Compress older history — last 4 messages (2 exchanges) full, older ones truncated
     const FULL_HISTORY_TAIL = 4;

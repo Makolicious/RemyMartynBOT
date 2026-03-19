@@ -25,6 +25,7 @@ module.exports = async (req, res) => {
     for (const entry of due) {
       try {
         const { chatId, message } = JSON.parse(entry);
+        if (typeof chatId !== 'number' || !message) throw new Error(`Invalid reminder data: ${entry}`);
         await bot.sendMessage(chatId, `⏰ *Reminder:* ${message}`, { parse_mode: 'Markdown' });
       } catch (err) {
         console.error('Failed to send reminder:', err.message);
