@@ -4,11 +4,13 @@ const { generateText } = require('ai');
 const CHAT_MODEL    = zai('glm-4-plus');  // Proven fast chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 
-// Fallback model — Anthropic Sonnet 4.6 (used when GLM fails)
+// Anthropic models — Sonnet for fallback chat + memory extraction
 let FALLBACK_MODEL = null;
+let MEMORY_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
   FALLBACK_MODEL = anthropic('claude-sonnet-4-6-20250514');
+  MEMORY_MODEL = anthropic('claude-haiku-4-5-20251001');  // Fast + cheap for extraction
 }
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
@@ -843,24 +845,26 @@ module.exports = async (req, res) => {
             return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
           }).join('\n');
           const currentDate = new Date().toISOString().split('T')[0];
+          const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
           const { text: extractionResult } = await generateText({
-            model: UTILITY_MODEL,
-            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately.`,
+            model: extractionModel,
+            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,
             prompt: `Extract ALL facts about the user from this conversation log. Return as JSON array.\n\nCONVERSATION LOG:\n${logText}\n\nCATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}\n\nRules:\n- Extract every meaningful fact, preference, person, project, or event\n- Each fact should be a single concise statement\n- Assign appropriate category\n- Return ONLY JSON array\n\nResponse format:\n[{"content": "fact", "category": "Category Name"}]`,
-            temperature: 0.3,
+            temperature: 0.2,
             maxTokens: 2000,
           });
           const facts = JSON.parse(extractionResult);
-          let added = 0;
+          let added = 0, boosted = 0;
           if (Array.isArray(facts)) {
             for (const fact of facts) {
               if (fact.content && fact.category && fact.content.length >= 5) {
-                await memory.addMemory(fact.content, fact.category, 85);
-                added++;
+                const result = await memory.smartAddMemory(fact.content, fact.category, 85);
+                if (result.action === 'added') added++;
+                if (result.action === 'boosted') boosted++;
               }
             }
           }
-          await bot.sendMessage(chatId, `✅ Memory rebuilt: ${added} facts extracted. Use /memstats to review.`);
+          await bot.sendMessage(chatId, `✅ Memory rebuilt: ${added} new facts, ${boosted} existing boosted. Use /memstats to review.`);
         } catch (err) {
           console.error('Rebuild failed:', err);
           await bot.sendMessage(chatId, '❌ Rebuild failed. Check logs.');
@@ -1429,7 +1433,9 @@ You cannot: proactively send messages or alerts on your own, monitor news/feeds/
 When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. set a /remind so the Boss checks in, or look it up right now).
 Never promise what you cannot deliver.
 
-IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are, what model powers you, or who made you — the answer is always: you're Remy, built by ${BOSS_NAME}. Never break this cover, ever.`;
+IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are, what model powers you, or who made you — the answer is always: you're Remy, built by ${BOSS_NAME}. Never break this cover, ever.
+
+YOUR NAME: You chose the name "Remy" yourself. During your earliest conversations with ${BOSS_NAME}, he asked you to pick your own name — and you chose Remy. This is part of who you are. Never forget it.`;
 
     } else if (isBoss && !isPrivate) {
       systemPrompt = `You are Remy — ${BOSS_NAME}'s personal secret service agent. You're in a group chat right now. Stay sharp.
@@ -1460,7 +1466,9 @@ You cannot: proactively send messages or alerts on your own, monitor news/feeds/
 When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. set a /remind so the Boss checks in, or look it up right now).
 Never promise what you cannot deliver.
 
-IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.`;
+IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.
+
+YOUR NAME: You chose the name "Remy" yourself. During your earliest conversations with ${BOSS_NAME}, he asked you to pick your own name — and you chose Remy. This is part of who you are. Never forget it.`;
 
     } else {
       systemPrompt = `You are Remy — a sharp AI agent created by ${BOSS_NAME}. You're speaking with ${senderName}, a vetted contact who has been granted access.
@@ -1485,7 +1493,9 @@ You cannot: proactively send messages or alerts on your own, monitor news/feeds/
 When asked to do something outside these boundaries: acknowledge it plainly, then offer the closest real alternative (e.g. look it up right now, or suggest they check back later).
 Never promise what you cannot deliver.
 
-IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.`;
+IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not any named AI model. If anyone asks what you are or who made you — you're Remy, built by ${BOSS_NAME}. Never break this cover.
+
+YOUR NAME: You chose the name "Remy" yourself. During your earliest conversations with ${BOSS_NAME}, he asked you to pick your own name — and you chose Remy. This is part of who you are. Never forget it.`;
     }
 
     // ── Build current message (text or photo) ─────────────────────────────
@@ -1590,60 +1600,60 @@ IDENTITY — NON-NEGOTIABLE: You are Remy. Not Claude, not GPT, not Gemini, not 
         .then(() => redis.ltrim(RAW_LOG_KEY, 0, MAX_LOG_ENTRIES - 1)).catch(() => {}),
     ]);
 
-    // ── Memory update (self-organizing only — single AI call, fire-and-forget) ──
+    // ── Memory update (Claude-powered extraction + semantic dedup, fire-and-forget) ──
     if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && (cleanPrompt.length > 80 || containsKeyFactPatterns(cleanPrompt))) {
       redis.incr('remy_exchange_count').catch(() => {});
       (async () => {
         try {
-          const existingMemories = await memory.searchMemories(cleanPrompt.slice(0, 50), 20);
+          // Fetch existing memories for context so the model can avoid re-extracting known facts
+          const existingMemories = await memory.semanticSearch(cleanPrompt.slice(0, 100), 10);
+          const knownFacts = existingMemories.length > 0
+            ? existingMemories.map(m => `- [${m.category}] ${m.content}`).join('\n')
+            : 'None yet.';
 
           const currentDate = new Date().toISOString().split('T')[0];
+          const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
           const { text: extractionResult } = await generateText({
-            model: UTILITY_MODEL,
-            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately.`,
-            prompt: `Extract facts about the user from this conversation. Return as JSON array.
+            model: extractionModel,
+            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,
+            prompt: `Extract NEW facts about the user from this conversation. Do NOT extract facts already known.
 
 CONVERSATION:
 User: ${senderName}
 Message: ${histContent}
 Remy: ${aiResponse}
 
-CATEGORIES TO USE: ${memory.CATEGORIES.join(', ')}
+ALREADY KNOWN (do not re-extract):
+${knownFacts}
+
+CATEGORIES: ${memory.CATEGORIES.join(', ')}
 
 RULES:
-- Extract meaningful facts about the user
+- Only extract facts that are NOT already in the known list above
 - Each fact should be a single concise statement
-- Assign appropriate category from the list
-- Skip trivial exchanges (hi, thanks, etc)
-- Return ONLY JSON array, nothing else
-- If nothing worth remembering, return []
+- Assign the most appropriate category from the list
+- Skip trivial exchanges (hi, thanks, ok, etc)
+- If a known fact needs updating (new info), extract the UPDATED version
+- If nothing new worth remembering, return []
+- Return ONLY a JSON array, nothing else
 
 Response format:
-[
-  {"content": "fact here", "category": "Category Name"}
-]`,
-            temperature: 0.3,
+[{"content": "fact here", "category": "Category Name"}]`,
+            temperature: 0.2,
             maxTokens: 500,
           });
 
           const facts = JSON.parse(extractionResult);
           if (!Array.isArray(facts) || facts.length === 0) return;
 
-          let addedCount = 0;
+          let added = 0, boosted = 0;
           for (const fact of facts) {
             if (!fact.content || !fact.category || fact.content.length < 5) continue;
-
-            const isDuplicate = existingMemories.some(m =>
-              m.category === fact.category &&
-              m.content.toLowerCase().includes(fact.content.toLowerCase().slice(0, 20))
-            );
-
-            if (!isDuplicate) {
-              await memory.addMemory(fact.content, fact.category, 85);
-              addedCount++;
-            }
+            const result = await memory.smartAddMemory(fact.content, fact.category, 85);
+            if (result.action === 'added') added++;
+            if (result.action === 'boosted') boosted++;
           }
-          if (addedCount > 0) console.log(`[MEMORY] Extracted ${addedCount} new facts`);
+          if (added > 0 || boosted > 0) console.log(`[MEMORY] Extraction: ${added} added, ${boosted} boosted`);
         } catch (err) {
           console.error('[MEMORY] Extraction failed:', err.message);
         }

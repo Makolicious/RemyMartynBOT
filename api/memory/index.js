@@ -526,8 +526,67 @@ async function exportAsMarkdown() {
   return output.join('\n');
 }
 
+/**
+ * Check if a fact is a semantic duplicate of an existing memory.
+ * Returns the matching memory if similarity > threshold, null otherwise.
+ */
+async function findDuplicate(content, category, threshold = 0.85) {
+  const db = getRedis();
+
+  // Generate embedding for the new fact
+  const newVec = await generateEmbedding(`[${category}] ${content}`);
+  if (!newVec) return null; // Can't check without embedding, allow it through
+
+  // Get all embeddings
+  const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
+  if (!allEmbeddings || Object.keys(allEmbeddings).length === 0) return null;
+
+  // Find best match
+  let bestMatch = null;
+  let bestSim = 0;
+
+  for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
+    try {
+      const vec = JSON.parse(vecJson);
+      const sim = cosineSimilarity(newVec, vec);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestMatch = memId;
+      }
+    } catch { /* skip corrupted */ }
+  }
+
+  if (bestSim >= threshold && bestMatch) {
+    const mem = await getMemory(bestMatch, false);
+    if (mem) return { ...mem, similarity: bestSim };
+  }
+
+  return null;
+}
+
+/**
+ * Smart add — checks for duplicates before adding.
+ * If a duplicate exists, boosts its importance instead of creating a new entry.
+ * Returns { action: 'added'|'boosted'|'skipped', memory }
+ */
+async function smartAddMemory(content, category, confidence = 85) {
+  const duplicate = await findDuplicate(content, category);
+
+  if (duplicate) {
+    // Boost existing memory instead of adding duplicate
+    await boostMemory(duplicate.id, duplicate);
+    console.log(`[MEMORY] Dedup: boosted existing "${duplicate.content.slice(0, 40)}..." (sim: ${duplicate.similarity.toFixed(2)})`);
+    return { action: 'boosted', memory: duplicate };
+  }
+
+  const mem = await addMemory(content, category, confidence);
+  return { action: 'added', memory: mem };
+}
+
 module.exports = {
   addMemory,
+  smartAddMemory,
+  findDuplicate,
   getMemory,
   getMemoriesByCategory,
   searchMemories,
