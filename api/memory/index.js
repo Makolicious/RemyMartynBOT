@@ -100,6 +100,7 @@ async function semanticSearch(queryText, limit = 10) {
   for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
     try {
       const vec = JSON.parse(vecJson);
+      if (!Array.isArray(vec) || vec.length !== queryVec.length) continue;
       const sim = cosineSimilarity(queryVec, vec);
       scored.push({ id: memId, similarity: sim });
     } catch { /* skip corrupted entries */ }
@@ -548,6 +549,7 @@ async function findDuplicate(content, category, threshold = 0.85) {
   for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
     try {
       const vec = JSON.parse(vecJson);
+      if (!Array.isArray(vec) || vec.length !== newVec.length) continue;
       const sim = cosineSimilarity(newVec, vec);
       if (sim > bestSim) {
         bestSim = sim;

@@ -369,9 +369,11 @@ async function handleCallbackQuery(query, res) {
       if (!entries.length) {
         await safeEdit(chatId, messageId, '📝 No notes yet. Use `/note <text>` to save one.', backButton());
       } else {
-        const notesList = entries.map((e, i) => {
-          const { ts, text: t } = JSON.parse(e);
-          return `${i + 1}. [${ts.split('T')[0]}] ${t}`;
+        const notesList = entries.flatMap((e, i) => {
+          try {
+            const { ts, text: t } = JSON.parse(e);
+            return [`${i + 1}. [${ts.split('T')[0]}] ${t}`];
+          } catch { console.error('[NOTES] Corrupt entry at index', i); return []; }
         }).join('\n');
         const text = `📝 *Your notes:*\n\n${notesList}`;
         if (text.length > 4000) {
@@ -394,11 +396,13 @@ async function handleCallbackQuery(query, res) {
         const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
         const list = [];
         for (let i = 0; i < all.length; i += 2) {
-          const { message: msg } = JSON.parse(all[i]);
-          const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
-            timeZone: tz, dateStyle: 'medium', timeStyle: 'short',
-          });
-          list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
+          try {
+            const { message: msg } = JSON.parse(all[i]);
+            const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
+              timeZone: tz, dateStyle: 'medium', timeStyle: 'short',
+            });
+            list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
+          } catch { console.error('[REMINDERS] Corrupt entry at index', i / 2); }
         }
         await safeEdit(chatId, messageId, `⏰ *Pending reminders:*\n\n${list.join('\n')}`, backButton());
       }
@@ -431,11 +435,13 @@ async function handleCallbackQuery(query, res) {
       if (!entries.length) {
         await safeEdit(chatId, messageId, '📋 No log entries yet.', backButton());
       } else {
-        const logText = entries.map(e => {
-          const { ts, sender, msg } = JSON.parse(e);
-          const date    = new Date(ts).toLocaleString();
-          const preview = msg.length > 80 ? msg.slice(0, 80) + '...' : msg;
-          return `*[${date}]* ${sender}:\n_${preview}_`;
+        const logText = entries.flatMap(e => {
+          try {
+            const { ts, sender, msg } = JSON.parse(e);
+            const date    = new Date(ts).toLocaleString();
+            const preview = msg.length > 80 ? msg.slice(0, 80) + '...' : msg;
+            return [`*[${date}]* ${sender}:\n_${preview}_`];
+          } catch { console.error('[LOG] Corrupt menu log entry'); return []; }
         }).join('\n\n');
         const text = `📋 *Last 10 exchanges:*\n\n${logText}`;
         if (text.length > 4000) {
@@ -478,9 +484,11 @@ async function handleCallbackQuery(query, res) {
         await safeEdit(chatId, messageId, '⚠️ No conversation history to summarize.', backButton());
         return res.status(200).send('OK');
       }
-      const logText = entries.reverse().map(e => {
-        const { ts, sender, msg, reply } = JSON.parse(e);
-        return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
+      const logText = entries.reverse().flatMap(e => {
+        try {
+          const { ts, sender, msg, reply } = JSON.parse(e);
+          return [`[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`];
+        } catch { return []; }
       }).join('\n');
       const { text: summary } = await generateText({
         model: CHAT_MODEL,
@@ -498,12 +506,14 @@ async function handleCallbackQuery(query, res) {
         await safeEdit(chatId, messageId, '⚠️ No log to export.', backButton());
         return res.status(200).send('OK');
       }
-      const lines = entries.reverse().map(e => {
-        const { sender, msg, reply } = JSON.parse(e);
-        return JSON.stringify({ messages: [
-          { role: 'user', content: msg },
-          { role: 'assistant', content: reply },
-        ]});
+      const lines = entries.reverse().flatMap(e => {
+        try {
+          const { sender, msg, reply } = JSON.parse(e);
+          return [JSON.stringify({ messages: [
+            { role: 'user', content: msg },
+            { role: 'assistant', content: reply },
+          ]})];
+        } catch { return []; }
       });
       const jsonl = lines.join('\n');
       const buf = Buffer.from(jsonl, 'utf8');
@@ -816,11 +826,13 @@ module.exports = async (req, res) => {
           await bot.sendMessage(chatId, '📋 No log entries yet.');
           return res.status(200).send('OK');
         }
-        const logText = entries.map(e => {
-          const { ts, sender, msg } = JSON.parse(e);
-          const date    = new Date(ts).toLocaleString();
-          const preview = msg.length > 80 ? msg.slice(0, 80) + '...' : msg;
-          return `*[${date}]* ${sender}:\n_${preview}_`;
+        const logText = entries.flatMap(e => {
+          try {
+            const { ts, sender, msg } = JSON.parse(e);
+            const date    = new Date(ts).toLocaleString();
+            const preview = msg.length > 80 ? msg.slice(0, 80) + '...' : msg;
+            return [`*[${date}]* ${sender}:\n_${preview}_`];
+          } catch { console.error('[LOG] Corrupt log entry'); return []; }
         }).join('\n\n');
         await safeSend(chatId, `📋 *Last 10 exchanges:*\n\n${logText}`);
         return res.status(200).send('OK');
@@ -840,9 +852,11 @@ module.exports = async (req, res) => {
         }
         await bot.sendMessage(chatId, `🔄 Rebuilding memory from ${entries.length} entries...`);
         try {
-          const logText = entries.reverse().map(e => {
-            const { ts, sender, msg, reply } = JSON.parse(e);
-            return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
+          const logText = entries.reverse().flatMap(e => {
+            try {
+              const { ts, sender, msg, reply } = JSON.parse(e);
+              return [`[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`];
+            } catch { return []; }
           }).join('\n');
           const currentDate = new Date().toISOString().split('T')[0];
           const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
@@ -853,7 +867,8 @@ module.exports = async (req, res) => {
             temperature: 0.2,
             maxTokens: 2000,
           });
-          const facts = JSON.parse(extractionResult);
+          let facts;
+          try { facts = JSON.parse(extractionResult); } catch { facts = []; }
           let added = 0, boosted = 0;
           if (Array.isArray(facts)) {
             for (const fact of facts) {
@@ -1013,9 +1028,11 @@ module.exports = async (req, res) => {
           await bot.sendMessage(chatId, '📝 No notes yet. Use `/note <text>` to save one.', { parse_mode: 'Markdown' });
           return res.status(200).send('OK');
         }
-        const notesList = entries.map((e, i) => {
-          const { ts, text: t } = JSON.parse(e);
-          return `${i + 1}. [${ts.split('T')[0]}] ${t}`;
+        const notesList = entries.flatMap((e, i) => {
+          try {
+            const { ts, text: t } = JSON.parse(e);
+            return [`${i + 1}. [${ts.split('T')[0]}] ${t}`];
+          } catch { console.error('[NOTES] Corrupt entry at index', i); return []; }
         }).join('\n');
         await safeSend(chatId, `📝 *Your notes:*\n\n${notesList}`);
         return res.status(200).send('OK');
@@ -1056,8 +1073,12 @@ module.exports = async (req, res) => {
         // Redis lists don't support direct index delete — use a placeholder then remove it
         const target = entries[n - 1];
         await redis.lrem(NOTES_KEY, 1, target);
-        const { text: t } = JSON.parse(target);
-        await bot.sendMessage(chatId, `🗑️ Deleted note ${n}: "${t.slice(0, 80)}"`);
+        try {
+          const { text: t } = JSON.parse(target);
+          await bot.sendMessage(chatId, `🗑️ Deleted note ${n}: "${t.slice(0, 80)}"`);
+        } catch {
+          await bot.sendMessage(chatId, `🗑️ Deleted note ${n}.`);
+        }
         return res.status(200).send('OK');
       }
 
@@ -1078,9 +1099,11 @@ module.exports = async (req, res) => {
         }
         await bot.sendMessage(chatId, `🔄 Summarizing last ${entries.length} exchanges...`);
         try {
-          const logText = entries.reverse().map(e => {
-            const { ts, sender, msg, reply } = JSON.parse(e);
-            return `[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`;
+          const logText = entries.reverse().flatMap(e => {
+            try {
+              const { ts, sender, msg, reply } = JSON.parse(e);
+              return [`[${ts.split('T')[0]}] ${sender}: "${msg.slice(0, 120)}" → Remy: "${reply.slice(0, 120)}"`];
+            } catch { return []; }
           }).join('\n');
           const { text: summary } = await generateText({
             model: CHAT_MODEL,
@@ -1126,13 +1149,15 @@ module.exports = async (req, res) => {
         const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
         const list = [];
         for (let i = 0; i < all.length; i += 2) {
-          const { message: msg } = JSON.parse(all[i]);
-          const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
-            timeZone: tz,
-            dateStyle: 'medium',
-            timeStyle: 'short',
-          });
-          list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
+          try {
+            const { message: msg } = JSON.parse(all[i]);
+            const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
+              timeZone: tz,
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            });
+            list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
+          } catch { console.error('[REMINDERS] Corrupt entry at index', i / 2); }
         }
         await safeSend(chatId, `⏰ *Pending reminders:*\n\n${list.join('\n')}`);
         return res.status(200).send('OK');
@@ -1153,8 +1178,12 @@ module.exports = async (req, res) => {
         }
         const target = all[(n - 1) * 2];
         await redis.zrem(REMINDERS_KEY, target);
-        const { message: msg } = JSON.parse(target);
-        await bot.sendMessage(chatId, `🗑️ Deleted reminder ${n}: "${msg.slice(0, 80)}"`);
+        try {
+          const { message: msg } = JSON.parse(target);
+          await bot.sendMessage(chatId, `🗑️ Deleted reminder ${n}: "${msg.slice(0, 80)}"`);
+        } catch {
+          await bot.sendMessage(chatId, `🗑️ Deleted reminder ${n}.`);
+        }
         return res.status(200).send('OK');
       }
 
@@ -1643,7 +1672,8 @@ Response format:
             maxTokens: 500,
           });
 
-          const facts = JSON.parse(extractionResult);
+          let facts;
+          try { facts = JSON.parse(extractionResult); } catch { return; }
           if (!Array.isArray(facts) || facts.length === 0) return;
 
           let added = 0, boosted = 0;
