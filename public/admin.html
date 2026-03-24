@@ -139,7 +139,7 @@
       <div class="text-4xl mb-6">🤖</div>
       <h1 class="text-2xl font-bold mb-2">Remy Admin</h1>
       <p class="text-gray-400 mb-6">Enter your admin password</p>
-      <input type="password" id="adminPassword" placeholder="Admin Password" class="w-full px-4 py-3 rounded-lg mb-4 text-lg">
+      <input type="password" id="adminPassword" placeholder="Admin Password" class="w-full px-4 py-3 rounded-lg mb-4 text-lg" onkeydown="if(event.key==='Enter')login()">
       <button onclick="login()" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 rounded-lg transition">
         Enter Dashboard
       </button>
@@ -236,6 +236,16 @@
             <span>📝 Accesses: <strong id="memAccessCount">-</strong></span>
           </div>
         </div>
+        <!-- Add Memory Form (hidden by default) -->
+        <div id="addMemoryForm" class="card rounded-xl p-4 mb-4 hidden">
+          <h3 class="text-sm font-bold text-gray-400 mb-3">NEW MEMORY</h3>
+          <textarea id="memContentInput" rows="2" placeholder="Memory content..." class="w-full px-3 py-2 rounded-lg resize-none mb-3"></textarea>
+          <div class="flex flex-col sm:flex-row gap-3">
+            <select id="memCategoryInput" class="px-3 py-2 rounded-lg flex-1"></select>
+            <button onclick="submitMemory()" class="bg-green-500 hover:bg-green-600 px-6 py-2 rounded-lg font-bold transition whitespace-nowrap">Save</button>
+            <button onclick="document.getElementById('addMemoryForm').classList.add('hidden')" class="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded-lg transition">Cancel</button>
+          </div>
+        </div>
         <div id="memoriesList" class="space-y-2"></div>
       </section>
 
@@ -243,7 +253,11 @@
       <section id="section-notes" class="section hidden">
         <div class="flex justify-between items-center mb-4">
           <h2 class="text-xl font-bold">📝 Notes</h2>
-          <button onclick="addNote()" class="bg-indigo-500 hover:bg-indigo-600 px-4 py-2 rounded-lg font-bold transition">+ Add Note</button>
+        </div>
+        <div class="card rounded-xl p-4 mb-4">
+          <h3 class="text-sm font-bold text-gray-400 mb-3">NEW NOTE</h3>
+          <textarea id="noteInput" rows="2" placeholder="Write a note..." class="w-full px-3 py-2 rounded-lg resize-none mb-3"></textarea>
+          <button onclick="addNote()" class="bg-indigo-500 hover:bg-indigo-600 px-6 py-2 rounded-lg font-bold transition">+ Add Note</button>
         </div>
         <div id="notesList" class="space-y-4"></div>
       </section>
@@ -470,8 +484,10 @@
           showToast(data.error, 'error');
         }
 
+        setConnectionStatus(true);
         return data;
       } catch (err) {
+        setConnectionStatus(false);
         showToast(`Request failed: ${err.message}`, 'error');
         return null;
       } finally {
@@ -479,8 +495,16 @@
       }
     }
 
+    let loadingTimer = null;
     function showLoading(show) {
-      document.getElementById('loading').classList.toggle('hidden', !show);
+      if (show) {
+        loadingTimer = setTimeout(() => {
+          document.getElementById('loading').classList.remove('hidden');
+        }, 200);
+      } else {
+        clearTimeout(loadingTimer);
+        document.getElementById('loading').classList.add('hidden');
+      }
     }
 
     function showToast(message, type = 'success') {
@@ -489,6 +513,17 @@
       toast.className = `fixed bottom-4 left-4 right-4 px-4 py-2 rounded-lg shadow-xl z-50 ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
       toast.classList.remove('hidden');
       setTimeout(() => toast.classList.add('hidden'), 2500);
+    }
+
+    function setConnectionStatus(connected) {
+      const el = document.getElementById('connectionStatus');
+      if (connected) {
+        el.innerHTML = '<span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span> Connected';
+        el.className = 'text-green-400 text-sm flex items-center gap-1';
+      } else {
+        el.innerHTML = '<span class="w-2 h-2 bg-red-400 rounded-full"></span> Disconnected';
+        el.className = 'text-red-400 text-sm flex items-center gap-1';
+      }
     }
 
     // ── Stats ─────────────────────────────────────────────────────────
@@ -551,14 +586,14 @@
                 <div class="flex justify-between items-start mb-3">
                   <div class="flex items-center gap-2">
                     ${pinIcon}
-                    <span class="text-xs px-3 py-1.5 rounded bg-indigo-500/30 text-indigo-300 font-medium">${m.category}</span>
+                    <span class="text-xs px-3 py-1.5 rounded bg-indigo-500/30 text-indigo-300 font-medium">${escapeHtml(m.category)}</span>
                   </div>
                   <div class="flex gap-3 text-xs">
                     <span class="${importanceColor}">⚡ ${m.importance.toFixed(0)}</span>
                     <span class="text-gray-400">📝 ${m.access_count}</span>
                   </div>
                 </div>
-                <p class="text-sm mb-3 leading-relaxed">${m.content}</p>
+                <p class="text-sm mb-3 leading-relaxed">${escapeHtml(m.content)}</p>
                 ${confidenceBar}
                 <div class="flex justify-between items-center mt-3 text-xs text-gray-400">
                   <span>Created: ${new Date(m.created_at).toLocaleDateString()}</span>
@@ -583,23 +618,30 @@
       }
     }
 
-    async function addMemoryDialog() {
-      const content = prompt('Enter memory content:');
-      if (!content) return;
+    function addMemoryDialog() {
+      const form = document.getElementById('addMemoryForm');
+      const catSelect = document.getElementById('memCategoryInput');
+      // Populate category dropdown once
+      if (catSelect.options.length === 0) {
+        MEMORY_CATEGORIES.forEach(cat => {
+          const opt = document.createElement('option');
+          opt.value = cat;
+          opt.textContent = cat;
+          catSelect.appendChild(opt);
+        });
+      }
+      form.classList.remove('hidden');
+      document.getElementById('memContentInput').focus();
+    }
 
-      // Ask for category with numbered list
-      const catOptions = MEMORY_CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
-      const catInput = prompt(`Select category number:\n\n${catOptions}`);
+    async function submitMemory() {
+      const content = document.getElementById('memContentInput').value.trim();
+      const category = document.getElementById('memCategoryInput').value;
 
-      if (!catInput) return;
-      const catIndex = parseInt(catInput) - 1;
-
-      if (catIndex < 0 || catIndex >= MEMORY_CATEGORIES.length) {
-        showToast('Invalid category', 'error');
+      if (!content) {
+        showToast('Enter memory content', 'error');
         return;
       }
-
-      const category = MEMORY_CATEGORIES[catIndex];
 
       const data = await apiCall('/memories/add', {
         method: 'POST',
@@ -607,6 +649,8 @@
       });
 
       if (data?.success) {
+        document.getElementById('memContentInput').value = '';
+        document.getElementById('addMemoryForm').classList.add('hidden');
         showToast('Memory added!');
         loadMemories();
       }
@@ -637,10 +681,14 @@
       const data = await apiCall('/notes');
       if (data) {
         const list = document.getElementById('notesList');
+        if (data.notes.length === 0) {
+          list.innerHTML = '<p class="text-gray-400 text-center py-8">No notes yet</p>';
+          return;
+        }
         list.innerHTML = data.notes.map(n => `
           <div class="card rounded-lg p-5">
-            <div class="text-indigo-300 text-sm font-medium mb-2">${n.timestamp.slice(0, 10)}</div>
-            <p class="text-gray-100 mb-3 leading-relaxed">${n.text}</p>
+            <div class="text-indigo-300 text-sm font-medium mb-2">${escapeHtml(n.timestamp.slice(0, 10))}</div>
+            <p class="text-gray-100 mb-3 leading-relaxed">${escapeHtml(n.text)}</p>
             <button onclick="deleteNote(${n.id})" class="text-red-400 hover:text-red-300 text-sm transition">Delete</button>
           </div>
         `).join('');
@@ -648,14 +696,19 @@
     }
 
     async function addNote() {
-      const text = prompt('Enter your note:');
-      if (!text) return;
+      const input = document.getElementById('noteInput');
+      const text = input.value.trim();
+      if (!text) {
+        showToast('Write something first', 'error');
+        return;
+      }
 
       const data = await apiCall('/notes', {
         method: 'POST',
         body: JSON.stringify({ text })
       });
       if (data?.success) {
+        input.value = '';
         loadNotes();
         showToast('Note added!');
       }
@@ -997,13 +1050,13 @@
           <div class="card rounded-lg p-4 ${entry.isBoss ? 'border-l-4 border-indigo-500' : ''}">
             <div class="flex justify-between items-center mb-2">
               <div>
-                <span class="text-indigo-400 font-bold">${entry.sender}</span>
-                <span class="text-gray-400 text-sm ml-2">${entry.formattedDate}</span>
-                <span class="text-xs px-2 py-1 rounded ${entry.chatType === 'private' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">${entry.chatType}</span>
+                <span class="text-indigo-400 font-bold">${escapeHtml(entry.sender)}</span>
+                <span class="text-gray-400 text-sm ml-2">${escapeHtml(entry.formattedDate)}</span>
+                <span class="text-xs px-2 py-1 rounded ${entry.chatType === 'private' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">${escapeHtml(entry.chatType)}</span>
               </div>
             </div>
-            <p class="text-gray-300 mb-2">${entry.message}</p>
-            <p class="text-indigo-300 italic text-sm">→ ${entry.reply}</p>
+            <p class="text-gray-300 mb-2">${escapeHtml(entry.message)}</p>
+            <p class="text-indigo-300 italic text-sm">${escapeHtml(entry.reply)}</p>
           </div>
         `).join('');
       }
@@ -1019,14 +1072,14 @@
             <h3 class="text-lg font-bold mb-2">Approved Users (${data.totalUsers})</h3>
             <p class="text-gray-400 mb-2">Telegram IDs with bot access:</p>
             <div class="flex flex-wrap gap-2">
-              ${data.approvedUsers.map(id => `<span class="bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full text-sm">${id}</span>`).join('')}
+              ${data.approvedUsers.map(id => `<span class="bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full text-sm">${escapeHtml(String(id))}</span>`).join('')}
             </div>
           </div>
           <div class="card rounded-lg p-4">
             <h3 class="text-lg font-bold mb-2">Active Groups (${data.totalGroups})</h3>
             <p class="text-gray-400 mb-2">Groups where Boss is present:</p>
             <div class="flex flex-wrap gap-2">
-              ${data.activeGroups.map(g => `<span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-sm">${g}</span>`).join('')}
+              ${data.activeGroups.map(g => `<span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-sm">${escapeHtml(String(g))}</span>`).join('')}
             </div>
           </div>
         `;
