@@ -483,15 +483,23 @@
       }
     }
 
+    let loadingCount = 0;
     let loadingTimer = null;
     function showLoading(show) {
       if (show) {
-        loadingTimer = setTimeout(() => {
-          document.getElementById('loading').classList.remove('hidden');
-        }, 200);
+        loadingCount++;
+        if (!loadingTimer) {
+          loadingTimer = setTimeout(() => {
+            if (loadingCount > 0) document.getElementById('loading').classList.remove('hidden');
+          }, 300);
+        }
       } else {
-        clearTimeout(loadingTimer);
-        document.getElementById('loading').classList.add('hidden');
+        loadingCount = Math.max(0, loadingCount - 1);
+        if (loadingCount === 0) {
+          clearTimeout(loadingTimer);
+          loadingTimer = null;
+          document.getElementById('loading').classList.add('hidden');
+        }
       }
     }
 
