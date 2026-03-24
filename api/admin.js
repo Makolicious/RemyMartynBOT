@@ -50,6 +50,8 @@ const APPROVED_KEY    = 'approved_users';
 const BOSS_GRP_PREFIX = 'boss_group_';
 const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
+const CRON_JOBS_KEY   = 'remy_cron_jobs';     // ZSET: score=nextFire, value=jobId
+const CRON_PREFIX     = 'remy_cron:';         // HASH per job
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +65,38 @@ function formatDate(isoString) {
 function jsonResponse(res, data, status = 200) {
   res.setHeader('Content-Type', 'application/json');
   res.status(status).json(data);
+}
+
+// ── Cron Job Helpers ─────────────────────────────────────────────────────────
+
+function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const now = new Date();
+  let next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+
+  // If today's fire time already passed, start from tomorrow
+  if (next <= now) next.setDate(next.getDate() + 1);
+
+  switch (repeat) {
+    case 'daily':
+      return next.getTime();
+    case 'weekdays':
+      while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+      return next.getTime();
+    case 'weekly':
+      const targetDay = parseInt(dayOfWeek) || 1;
+      while (next.getDay() !== targetDay) next.setDate(next.getDate() + 1);
+      return next.getTime();
+    case 'monthly':
+      const targetDate = parseInt(dayOfMonth) || 1;
+      next.setDate(targetDate);
+      if (next <= now) next.setMonth(next.getMonth() + 1);
+      next.setDate(targetDate);
+      return next.getTime();
+    default:
+      return next.getTime();
+  }
 }
 
 // ── API Handler ──────────────────────────────────────────────────────────────
@@ -104,12 +138,13 @@ module.exports = async (req, res) => {
 
     // ── GET /stats ───────────────────────────────────────────────────
     if (path === '/stats' && req.method === 'GET') {
-      const [logLen, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
+      const [logLen, approvedCount, exchangeCount, notesLen, remindersLen, cronJobsLen] = await Promise.all([
         db.llen(RAW_LOG_KEY),
         db.scard(APPROVED_KEY),
         db.get('remy_exchange_count'),
         db.llen(NOTES_KEY),
         db.zcard(REMINDERS_KEY),
+        db.zcard(CRON_JOBS_KEY),
       ]);
 
       return jsonResponse(res, {
@@ -118,6 +153,7 @@ module.exports = async (req, res) => {
         approvedUsers: approvedCount,
         savedNotes: notesLen,
         pendingReminders: remindersLen,
+        cronJobs: cronJobsLen,
       });
     }
 
@@ -414,6 +450,122 @@ module.exports = async (req, res) => {
 
       const pruned = await memory.pruneMemories(threshold);
       return jsonResponse(res, { success: true, pruned });
+    }
+
+    // ── GET /cron-jobs — list all recurring jobs ──────────────────────
+    if (path === '/cron-jobs' && req.method === 'GET') {
+      const jobIds = await db.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+      const jobs = [];
+
+      for (let i = 0; i < jobIds.length; i += 2) {
+        try {
+          const jobId = jobIds[i];
+          const nextFire = parseInt(jobIds[i + 1]);
+          const data = await db.hgetall(`${CRON_PREFIX}${jobId}`);
+          if (!data || !data.message) continue;
+          jobs.push({
+            id: jobId,
+            message: data.message,
+            repeat: data.repeat || 'daily',
+            time: data.time || '09:00',
+            dayOfWeek: data.dayOfWeek || null,
+            dayOfMonth: data.dayOfMonth || null,
+            enabled: data.enabled !== 'false',
+            nextFire,
+            nextFireFormatted: formatDate(new Date(nextFire)),
+            lastFired: data.lastFired ? formatDate(new Date(parseInt(data.lastFired))) : null,
+            fireCount: parseInt(data.fireCount) || 0,
+            createdAt: data.createdAt || null,
+          });
+        } catch { console.error('[ADMIN] Corrupt cron job at index', i / 2); }
+      }
+
+      return jsonResponse(res, { jobs });
+    }
+
+    // ── POST /cron-jobs — create recurring job ──────────────────────────
+    if (path === '/cron-jobs' && req.method === 'POST') {
+      const body = req.body || {};
+      const { message, repeat, time, dayOfWeek, dayOfMonth } = body;
+
+      if (!message || !time) {
+        return jsonResponse(res, { error: 'message and time required' }, 400);
+      }
+
+      const validRepeats = ['daily', 'weekdays', 'weekly', 'monthly'];
+      const repeatType = validRepeats.includes(repeat) ? repeat : 'daily';
+
+      const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const chatId = parseInt(process.env.BOSS_ID);
+      const nextFire = calculateNextFire(time, repeatType, dayOfWeek, dayOfMonth);
+
+      await db.hset(`${CRON_PREFIX}${jobId}`,
+        'message', message,
+        'repeat', repeatType,
+        'time', time,
+        'dayOfWeek', dayOfWeek || '',
+        'dayOfMonth', dayOfMonth || '',
+        'chatId', chatId || '',
+        'enabled', 'true',
+        'fireCount', '0',
+        'createdAt', new Date().toISOString(),
+      );
+      await db.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+      return jsonResponse(res, { success: true, message: 'Cron job created', jobId });
+    }
+
+    // ── PUT /cron-jobs/:id — edit recurring job ─────────────────────────
+    if (path.startsWith('/cron-jobs/') && req.method === 'PUT' && !path.endsWith('/toggle')) {
+      const jobId = path.split('/cron-jobs/')[1];
+      const body = req.body || {};
+      const { message, repeat, time, dayOfWeek, dayOfMonth } = body;
+
+      const exists = await db.exists(`${CRON_PREFIX}${jobId}`);
+      if (!exists) {
+        return jsonResponse(res, { error: 'Cron job not found' }, 404);
+      }
+
+      if (message) await db.hset(`${CRON_PREFIX}${jobId}`, 'message', message);
+      if (repeat) await db.hset(`${CRON_PREFIX}${jobId}`, 'repeat', repeat);
+      if (time) await db.hset(`${CRON_PREFIX}${jobId}`, 'time', time);
+      if (dayOfWeek !== undefined) await db.hset(`${CRON_PREFIX}${jobId}`, 'dayOfWeek', dayOfWeek || '');
+      if (dayOfMonth !== undefined) await db.hset(`${CRON_PREFIX}${jobId}`, 'dayOfMonth', dayOfMonth || '');
+
+      // Recalculate next fire time
+      const jobData = await db.hgetall(`${CRON_PREFIX}${jobId}`);
+      const nextFire = calculateNextFire(
+        jobData.time, jobData.repeat, jobData.dayOfWeek, jobData.dayOfMonth
+      );
+      await db.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+      return jsonResponse(res, { success: true, message: 'Cron job updated' });
+    }
+
+    // ── POST /cron-jobs/:id/toggle — enable/disable ─────────────────────
+    if (path.startsWith('/cron-jobs/') && path.endsWith('/toggle') && req.method === 'POST') {
+      const jobId = path.split('/cron-jobs/')[1].replace('/toggle', '');
+
+      const exists = await db.exists(`${CRON_PREFIX}${jobId}`);
+      if (!exists) {
+        return jsonResponse(res, { error: 'Cron job not found' }, 404);
+      }
+
+      const current = await db.hget(`${CRON_PREFIX}${jobId}`, 'enabled');
+      const newState = current === 'false' ? 'true' : 'false';
+      await db.hset(`${CRON_PREFIX}${jobId}`, 'enabled', newState);
+
+      return jsonResponse(res, { success: true, enabled: newState === 'true' });
+    }
+
+    // ── DELETE /cron-jobs/:id — delete recurring job ────────────────────
+    if (path.startsWith('/cron-jobs/') && req.method === 'DELETE') {
+      const jobId = path.split('/cron-jobs/')[1];
+
+      await db.del(`${CRON_PREFIX}${jobId}`);
+      await db.zrem(CRON_JOBS_KEY, jobId);
+
+      return jsonResponse(res, { success: true, message: 'Cron job deleted' });
     }
 
     // ── Unknown endpoint ─────────────────────────────────────────────

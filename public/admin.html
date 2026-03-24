@@ -173,6 +173,7 @@
         <button onclick="showSection('memories')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="memories">🧠 Memories</button>
         <button onclick="showSection('notes')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
         <button onclick="showSection('reminders')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="reminders">⏰ Reminders</button>
+        <button onclick="showSection('cronjobs')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="cronjobs">🔁 Cron Jobs</button>
         <button onclick="showSection('log')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
         <button onclick="showSection('users')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="users">👥 Users</button>
       </div>
@@ -208,6 +209,10 @@
           <div class="stat-card card rounded-xl p-5">
             <div class="text-4xl font-bold text-red-400 tracking-tight" id="statPendingReminders">-</div>
             <div class="text-gray-300 text-sm mt-1">Pending Reminders</div>
+          </div>
+          <div class="stat-card card rounded-xl p-5">
+            <div class="text-4xl font-bold text-cyan-400 tracking-tight" id="statCronJobs">-</div>
+            <div class="text-gray-300 text-sm mt-1">Cron Jobs</div>
           </div>
         </div>
       </section>
@@ -266,6 +271,57 @@
         </div>
 
         <div id="remindersList" class="space-y-3"></div>
+      </section>
+
+      <!-- Cron Jobs Section -->
+      <section id="section-cronjobs" class="section hidden">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-bold">🔁 Recurring Cron Jobs</h2>
+        </div>
+
+        <!-- Create new cron job -->
+        <div class="card rounded-xl p-4 mb-4">
+          <h3 class="text-sm font-bold text-gray-400 mb-3">NEW CRON JOB</h3>
+          <div class="space-y-3">
+            <input type="text" id="cronMessage" placeholder="What should Remy send you?" class="w-full px-3 py-2 rounded-lg">
+            <div class="flex flex-col sm:flex-row gap-3">
+              <div class="flex-shrink-0">
+                <label class="text-xs text-gray-400 block mb-1">Time</label>
+                <input type="time" id="cronTime" value="09:00" class="px-3 py-2 rounded-lg">
+              </div>
+              <div class="flex-shrink-0">
+                <label class="text-xs text-gray-400 block mb-1">Repeat</label>
+                <select id="cronRepeat" onchange="toggleCronDayFields()" class="px-3 py-2 rounded-lg">
+                  <option value="daily">Daily</option>
+                  <option value="weekdays">Weekdays (Mon-Fri)</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <div id="cronDayOfWeekWrap" class="flex-shrink-0 hidden">
+                <label class="text-xs text-gray-400 block mb-1">Day</label>
+                <select id="cronDayOfWeek" class="px-3 py-2 rounded-lg">
+                  <option value="0">Sunday</option>
+                  <option value="1" selected>Monday</option>
+                  <option value="2">Tuesday</option>
+                  <option value="3">Wednesday</option>
+                  <option value="4">Thursday</option>
+                  <option value="5">Friday</option>
+                  <option value="6">Saturday</option>
+                </select>
+              </div>
+              <div id="cronDayOfMonthWrap" class="flex-shrink-0 hidden">
+                <label class="text-xs text-gray-400 block mb-1">Day of month</label>
+                <input type="number" id="cronDayOfMonth" min="1" max="31" value="1" class="px-3 py-2 rounded-lg w-20">
+              </div>
+              <div class="flex items-end">
+                <button onclick="createCronJob()" class="bg-indigo-500 hover:bg-indigo-600 px-6 py-2 rounded-lg font-bold transition whitespace-nowrap">+ Create</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="cronJobsList" class="space-y-3"></div>
       </section>
 
       <!-- Log Section -->
@@ -374,6 +430,7 @@
         case 'memories': loadMemories(); break;
         case 'notes': loadNotes(); break;
         case 'reminders': loadReminders(); break;
+        case 'cronjobs': loadCronJobs(); break;
         case 'log': loadLog(); break;
         case 'users': loadUsers(); break;
       }
@@ -447,6 +504,7 @@
         document.getElementById('statApprovedUsers').textContent = data.approvedUsers;
         document.getElementById('statSavedNotes').textContent = data.savedNotes;
         document.getElementById('statPendingReminders').textContent = data.pendingReminders;
+        document.getElementById('statCronJobs').textContent = data.cronJobs || 0;
       }
     }
 
@@ -744,6 +802,185 @@
 
     function escapeAttr(str) {
       return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // ── Cron Jobs ─────────────────────────────────────────────────────
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const REPEAT_LABELS = { daily: 'Daily', weekdays: 'Weekdays', weekly: 'Weekly', monthly: 'Monthly' };
+    let cronJobsCache = [];
+
+    function toggleCronDayFields() {
+      const repeat = document.getElementById('cronRepeat').value;
+      document.getElementById('cronDayOfWeekWrap').classList.toggle('hidden', repeat !== 'weekly');
+      document.getElementById('cronDayOfMonthWrap').classList.toggle('hidden', repeat !== 'monthly');
+    }
+
+    function formatCronSchedule(job) {
+      const time = job.time || '09:00';
+      switch (job.repeat) {
+        case 'daily': return `Every day at ${time}`;
+        case 'weekdays': return `Weekdays at ${time}`;
+        case 'weekly': return `Every ${DAY_NAMES[job.dayOfWeek] || 'Monday'} at ${time}`;
+        case 'monthly': return `Monthly on the ${job.dayOfMonth || 1}${ordinalSuffix(job.dayOfMonth || 1)} at ${time}`;
+        default: return `At ${time}`;
+      }
+    }
+
+    function ordinalSuffix(n) {
+      const s = ['th','st','nd','rd'];
+      const v = n % 100;
+      return s[(v - 20) % 10] || s[v] || s[0];
+    }
+
+    async function loadCronJobs() {
+      const data = await apiCall('/cron-jobs');
+      if (data) {
+        cronJobsCache = data.jobs;
+        const list = document.getElementById('cronJobsList');
+        if (data.jobs.length === 0) {
+          list.innerHTML = '<p class="text-gray-400 text-center py-8">No recurring jobs set up</p>';
+          return;
+        }
+        list.innerHTML = data.jobs.map(j => {
+          const statusColor = j.enabled ? 'bg-green-500/30 text-green-400' : 'bg-red-500/30 text-red-400';
+          const statusText = j.enabled ? 'Active' : 'Paused';
+          return `
+            <div class="card rounded-lg p-4 ${!j.enabled ? 'opacity-60' : ''}" id="cron-${j.id}">
+              <div class="flex justify-between items-start">
+                <div class="flex-1">
+                  <div class="flex items-center gap-2 mb-2">
+                    <span class="text-xs px-2 py-0.5 rounded ${statusColor}">${statusText}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-cyan-500/30 text-cyan-400">${REPEAT_LABELS[j.repeat] || j.repeat}</span>
+                  </div>
+                  <p class="text-gray-100 font-medium mb-1">${escapeHtml(j.message)}</p>
+                  <p class="text-sm text-gray-400">${formatCronSchedule(j)}</p>
+                  <div class="flex gap-4 mt-2 text-xs text-gray-500">
+                    <span>Next: <span class="text-yellow-400">${j.nextFireFormatted}</span></span>
+                    ${j.lastFired ? `<span>Last: ${j.lastFired}</span>` : ''}
+                    <span>Fired ${j.fireCount}x</span>
+                  </div>
+                </div>
+                <div class="flex flex-col gap-2 ml-4">
+                  <button onclick="toggleCronJob('${j.id}')" class="text-sm ${j.enabled ? 'text-yellow-400 hover:text-yellow-300' : 'text-green-400 hover:text-green-300'} transition">${j.enabled ? 'Pause' : 'Resume'}</button>
+                  <button onclick="editCronJob('${j.id}')" class="text-indigo-400 hover:text-indigo-300 text-sm transition">Edit</button>
+                  <button onclick="deleteCronJob('${j.id}')" class="text-red-400 hover:text-red-300 text-sm transition">Delete</button>
+                </div>
+              </div>
+              <div id="cron-edit-${j.id}" class="hidden mt-3 pt-3 border-t border-white/10">
+                <div class="space-y-3">
+                  <input type="text" id="cron-edit-msg-${j.id}" class="w-full px-3 py-2 rounded-lg" value="${escapeAttr(j.message)}">
+                  <div class="flex flex-col sm:flex-row gap-3">
+                    <div>
+                      <label class="text-xs text-gray-400 block mb-1">Time</label>
+                      <input type="time" id="cron-edit-time-${j.id}" value="${j.time}" class="px-3 py-2 rounded-lg">
+                    </div>
+                    <div>
+                      <label class="text-xs text-gray-400 block mb-1">Repeat</label>
+                      <select id="cron-edit-repeat-${j.id}" onchange="toggleEditDayFields('${j.id}')" class="px-3 py-2 rounded-lg">
+                        <option value="daily" ${j.repeat === 'daily' ? 'selected' : ''}>Daily</option>
+                        <option value="weekdays" ${j.repeat === 'weekdays' ? 'selected' : ''}>Weekdays</option>
+                        <option value="weekly" ${j.repeat === 'weekly' ? 'selected' : ''}>Weekly</option>
+                        <option value="monthly" ${j.repeat === 'monthly' ? 'selected' : ''}>Monthly</option>
+                      </select>
+                    </div>
+                    <div id="cron-edit-dow-wrap-${j.id}" class="${j.repeat !== 'weekly' ? 'hidden' : ''}">
+                      <label class="text-xs text-gray-400 block mb-1">Day</label>
+                      <select id="cron-edit-dow-${j.id}" class="px-3 py-2 rounded-lg">
+                        ${DAY_NAMES.map((d, i) => `<option value="${i}" ${String(j.dayOfWeek) === String(i) ? 'selected' : ''}>${d}</option>`).join('')}
+                      </select>
+                    </div>
+                    <div id="cron-edit-dom-wrap-${j.id}" class="${j.repeat !== 'monthly' ? 'hidden' : ''}">
+                      <label class="text-xs text-gray-400 block mb-1">Day of month</label>
+                      <input type="number" id="cron-edit-dom-${j.id}" min="1" max="31" value="${j.dayOfMonth || 1}" class="px-3 py-2 rounded-lg w-20">
+                    </div>
+                  </div>
+                  <div class="flex gap-2">
+                    <button onclick="saveCronJob('${j.id}')" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded-lg text-sm font-bold transition">Save</button>
+                    <button onclick="cancelCronEdit('${j.id}')" class="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded-lg text-sm transition">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function toggleEditDayFields(jobId) {
+      const repeat = document.getElementById(`cron-edit-repeat-${jobId}`).value;
+      document.getElementById(`cron-edit-dow-wrap-${jobId}`).classList.toggle('hidden', repeat !== 'weekly');
+      document.getElementById(`cron-edit-dom-wrap-${jobId}`).classList.toggle('hidden', repeat !== 'monthly');
+    }
+
+    async function createCronJob() {
+      const message = document.getElementById('cronMessage').value.trim();
+      const time = document.getElementById('cronTime').value;
+      const repeat = document.getElementById('cronRepeat').value;
+      const dayOfWeek = document.getElementById('cronDayOfWeek').value;
+      const dayOfMonth = document.getElementById('cronDayOfMonth').value;
+
+      if (!message || !time) {
+        showToast('Message and time required', 'error');
+        return;
+      }
+
+      const data = await apiCall('/cron-jobs', {
+        method: 'POST',
+        body: JSON.stringify({ message, time, repeat, dayOfWeek, dayOfMonth })
+      });
+      if (data?.success) {
+        document.getElementById('cronMessage').value = '';
+        showToast('Cron job created!');
+        loadCronJobs();
+      }
+    }
+
+    function editCronJob(jobId) {
+      document.getElementById(`cron-edit-${jobId}`).classList.remove('hidden');
+    }
+
+    function cancelCronEdit(jobId) {
+      document.getElementById(`cron-edit-${jobId}`).classList.add('hidden');
+    }
+
+    async function saveCronJob(jobId) {
+      const message = document.getElementById(`cron-edit-msg-${jobId}`).value.trim();
+      const time = document.getElementById(`cron-edit-time-${jobId}`).value;
+      const repeat = document.getElementById(`cron-edit-repeat-${jobId}`).value;
+      const dayOfWeek = document.getElementById(`cron-edit-dow-${jobId}`).value;
+      const dayOfMonth = document.getElementById(`cron-edit-dom-${jobId}`).value;
+
+      if (!message || !time) {
+        showToast('Message and time required', 'error');
+        return;
+      }
+
+      const data = await apiCall(`/cron-jobs/${jobId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ message, time, repeat, dayOfWeek, dayOfMonth })
+      });
+      if (data?.success) {
+        showToast('Cron job updated');
+        loadCronJobs();
+      }
+    }
+
+    async function toggleCronJob(jobId) {
+      const data = await apiCall(`/cron-jobs/${jobId}/toggle`, { method: 'POST' });
+      if (data?.success) {
+        showToast(data.enabled ? 'Cron job resumed' : 'Cron job paused');
+        loadCronJobs();
+      }
+    }
+
+    async function deleteCronJob(jobId) {
+      if (!confirm('Delete this cron job?')) return;
+
+      const data = await apiCall(`/cron-jobs/${jobId}`, { method: 'DELETE' });
+      if (data?.success) {
+        showToast('Cron job deleted');
+        loadCronJobs();
+      }
     }
 
     // ── Log ────────────────────────────────────────────────────────
