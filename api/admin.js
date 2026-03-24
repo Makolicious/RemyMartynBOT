@@ -239,7 +239,7 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'when and message required' }, 400);
       }
 
-      const timestamp = when === 'now' ? Date.now() : new Date(when).getTime();
+      const timestamp = when === 'now' ? Date.now() : (typeof when === 'number' ? when : new Date(when).getTime());
       if (isNaN(timestamp)) {
         return jsonResponse(res, { error: 'Invalid date format' }, 400);
       }
@@ -265,7 +265,7 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'when and message required' }, 400);
       }
 
-      const newTimestamp = new Date(when).getTime();
+      const newTimestamp = typeof when === 'number' ? when : new Date(when).getTime();
       if (isNaN(newTimestamp)) {
         return jsonResponse(res, { error: 'Invalid date format' }, 400);
       }
@@ -277,7 +277,7 @@ module.exports = async (req, res) => {
 
       // Atomic: remove old, add new
       await db.zrem(REMINDERS_KEY, originalRaw);
-      await db.zadd(REMINDERS_KEY, newTimestamp, JSON.stringify({ chatId, message }));
+      await db.zadd(REMINDERS_KEY, newTimestamp, JSON.stringify({ chatId, message, id: Date.now() }));
       return jsonResponse(res, { success: true, message: 'Reminder updated' });
     }
 

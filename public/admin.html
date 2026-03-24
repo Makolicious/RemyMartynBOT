@@ -485,19 +485,31 @@
 
     let loadingCount = 0;
     let loadingTimer = null;
+    let loadingSafetyTimer = null;
     function showLoading(show) {
       if (show) {
         loadingCount++;
         if (!loadingTimer) {
           loadingTimer = setTimeout(() => {
+            loadingTimer = null;
             if (loadingCount > 0) document.getElementById('loading').classList.remove('hidden');
           }, 300);
         }
+        // Safety: force-hide after 10s to prevent stuck overlay
+        clearTimeout(loadingSafetyTimer);
+        loadingSafetyTimer = setTimeout(() => {
+          loadingCount = 0;
+          clearTimeout(loadingTimer);
+          loadingTimer = null;
+          document.getElementById('loading').classList.add('hidden');
+        }, 10000);
       } else {
         loadingCount = Math.max(0, loadingCount - 1);
         if (loadingCount === 0) {
           clearTimeout(loadingTimer);
+          clearTimeout(loadingSafetyTimer);
           loadingTimer = null;
+          loadingSafetyTimer = null;
           document.getElementById('loading').classList.add('hidden');
         }
       }
@@ -563,9 +575,18 @@
         });
       }
 
-      // Load memories
+      // Load memories and stats in parallel
       const category = filter.value;
-      const data = await apiCall(`/memories${category ? '?category=' + encodeURIComponent(category) : ''}`);
+      const [data, memStatsData] = await Promise.all([
+        apiCall(`/memories${category ? '?category=' + encodeURIComponent(category) : ''}`),
+        apiCall('/memories/stats'),
+      ]);
+
+      if (memStatsData?.stats) {
+        document.getElementById('memTotalCount').textContent = memStatsData.stats.totalMemories || 0;
+        document.getElementById('memHotCount').textContent = memStatsData.stats.hotMemories || 0;
+        document.getElementById('memAccessCount').textContent = memStatsData.stats.total_accesses || 0;
+      }
 
       if (data) {
         const list = document.getElementById('memoriesList');
@@ -600,17 +621,6 @@
         }
       }
 
-      // Load stats
-      loadMemoriesStats();
-    }
-
-    async function loadMemoriesStats() {
-      const data = await apiCall('/memories/stats');
-      if (data?.stats) {
-        document.getElementById('memTotalCount').textContent = data.stats.totalMemories || 0;
-        document.getElementById('memHotCount').textContent = data.stats.hotMemories || 0;
-        document.getElementById('memAccessCount').textContent = data.stats.total_accesses || 0;
-      }
     }
 
     function addMemoryDialog() {
@@ -913,9 +923,10 @@
         const when = document.getElementById('schedDateTime').value;
         if (!when) { showToast('Pick a date and time', 'error'); return; }
 
+        // Convert browser local time to UTC timestamp
         const data = await apiCall('/reminders', {
           method: 'POST',
-          body: JSON.stringify({ when, message })
+          body: JSON.stringify({ when: new Date(when).getTime(), message })
         });
         if (data?.success) {
           document.getElementById('schedMessage').value = '';
@@ -963,9 +974,10 @@
       const newText = document.getElementById(`reminder-edit-text-${id}`).value.trim();
       if (!newTime || !newText) { showToast('Date and text required', 'error'); return; }
 
+      // Convert browser local time to UTC timestamp
       const data = await apiCall(`/reminders/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ when: newTime, message: newText, originalRaw: r.raw })
+        body: JSON.stringify({ when: new Date(newTime).getTime(), message: newText, originalRaw: r.raw })
       });
       if (data?.success) { showToast('Reminder updated'); loadScheduler(); }
     }
