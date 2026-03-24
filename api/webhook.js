@@ -1629,8 +1629,8 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
         .then(() => redis.ltrim(RAW_LOG_KEY, 0, MAX_LOG_ENTRIES - 1)).catch(() => {}),
     ]);
 
-    // ── Memory update (Claude-powered extraction + semantic dedup, fire-and-forget) ──
-    if (histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && (cleanPrompt.length > 80 || containsKeyFactPatterns(cleanPrompt))) {
+    // ── Memory update (Boss messages only — Claude-powered extraction + semantic dedup, fire-and-forget) ──
+    if (isBoss && histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && (cleanPrompt.length > 80 || containsKeyFactPatterns(cleanPrompt))) {
       redis.incr('remy_exchange_count').catch(() => {});
       (async () => {
         try {
