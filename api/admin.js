@@ -166,17 +166,24 @@ module.exports = async (req, res) => {
 
     // ── GET /reminders ───────────────────────────────────────────────
     if (path === '/reminders' && req.method === 'GET') {
-      const all = await db.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+      const query = req.query || {};
+      const includePast = query.past === 'true';
+      const minScore = includePast ? 0 : Date.now();
+      const all = await db.zrangebyscore(REMINDERS_KEY, minScore, '+inf', 'WITHSCORES');
       const reminders = [];
 
       for (let i = 0; i < all.length; i += 2) {
         try {
-          const entry = JSON.parse(all[i]);
+          const raw = all[i];
+          const entry = JSON.parse(raw);
           const score = parseInt(all[i + 1]);
           reminders.push({
             id: Math.floor(i / 2) + 1,
+            raw,
             timestamp: score,
             message: entry.message,
+            chatId: entry.chatId || null,
+            isPast: score < Date.now(),
             formattedDate: formatDate(new Date(score)),
           });
         } catch { console.error('[ADMIN] Corrupt reminder entry at index', i / 2); }
@@ -199,14 +206,57 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Invalid date format' }, 400);
       }
 
-      await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ message }));
+      const chatId = parseInt(process.env.BOSS_ID);
+      if (!chatId) {
+        return jsonResponse(res, { error: 'BOSS_ID not configured' }, 500);
+      }
+
+      await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ chatId, message }));
       return jsonResponse(res, { success: true, message: 'Reminder set' });
+    }
+
+    // ── PUT /reminders/:id — edit a reminder ─────────────────────────
+    if (path.startsWith('/reminders/') && req.method === 'PUT') {
+      const body = req.body || {};
+      const { when, message, originalRaw } = body;
+
+      if (!originalRaw) {
+        return jsonResponse(res, { error: 'originalRaw required to identify reminder' }, 400);
+      }
+      if (!when || !message) {
+        return jsonResponse(res, { error: 'when and message required' }, 400);
+      }
+
+      const newTimestamp = new Date(when).getTime();
+      if (isNaN(newTimestamp)) {
+        return jsonResponse(res, { error: 'Invalid date format' }, 400);
+      }
+
+      // Parse old entry for chatId
+      let oldEntry = {};
+      try { oldEntry = JSON.parse(originalRaw); } catch {}
+      const chatId = oldEntry.chatId || parseInt(process.env.BOSS_ID);
+
+      // Atomic: remove old, add new
+      await db.zrem(REMINDERS_KEY, originalRaw);
+      await db.zadd(REMINDERS_KEY, newTimestamp, JSON.stringify({ chatId, message }));
+      return jsonResponse(res, { success: true, message: 'Reminder updated' });
     }
 
     // ── DELETE /reminders/:id ────────────────────────────────────────
     if (path.startsWith('/reminders/') && req.method === 'DELETE') {
+      const body = req.body || {};
+      const { raw } = body;
+
+      // Prefer raw value for precise deletion
+      if (raw) {
+        await db.zrem(REMINDERS_KEY, raw);
+        return jsonResponse(res, { success: true, message: 'Reminder deleted' });
+      }
+
+      // Fallback to index-based deletion
       const id = parseInt(path.split('/reminders/')[1]);
-      const all = await db.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+      const all = await db.zrangebyscore(REMINDERS_KEY, 0, '+inf', 'WITHSCORES');
 
       if (id < 1 || id * 2 > all.length) {
         return jsonResponse(res, { error: 'Invalid reminder ID' }, 400);
