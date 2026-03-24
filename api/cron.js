@@ -41,9 +41,15 @@ function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
       return next.getTime();
     case 'monthly':
       const targetDate = parseInt(dayOfMonth) || 1;
-      next.setDate(targetDate);
-      if (next <= now) next.setMonth(next.getMonth() + 1);
-      next.setDate(targetDate);
+      let targetMonth = next.getMonth();
+      // If we've already passed this day this month, move to next month
+      if (next.getDate() > targetDate || (next.getDate() === targetDate && new Date(now) >= next)) {
+        targetMonth++;
+      }
+      next.setMonth(targetMonth);
+      // Clamp to last day of month if target day doesn't exist (e.g., 31st in April)
+      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(targetDate, lastDay));
       return next.getTime();
     default:
       return next.getTime();

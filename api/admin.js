@@ -90,9 +90,11 @@ function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
       return next.getTime();
     case 'monthly':
       const targetDate = parseInt(dayOfMonth) || 1;
-      next.setDate(targetDate);
-      if (next <= now) next.setMonth(next.getMonth() + 1);
-      next.setDate(targetDate);
+      if (next.getDate() > targetDate || next <= now) {
+        next.setMonth(next.getMonth() + 1);
+      }
+      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(targetDate, lastDay));
       return next.getTime();
     default:
       return next.getTime();
@@ -247,7 +249,7 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'BOSS_ID not configured' }, 500);
       }
 
-      await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ chatId, message }));
+      await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ chatId, message, id: Date.now() }));
       return jsonResponse(res, { success: true, message: 'Reminder set' });
     }
 
@@ -497,6 +499,9 @@ module.exports = async (req, res) => {
 
       const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const chatId = parseInt(process.env.BOSS_ID);
+      if (!chatId) {
+        return jsonResponse(res, { error: 'BOSS_ID not configured' }, 500);
+      }
       const nextFire = calculateNextFire(time, repeatType, dayOfWeek, dayOfMonth);
 
       await db.hset(`${CRON_PREFIX}${jobId}`,

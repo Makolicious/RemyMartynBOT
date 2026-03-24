@@ -563,6 +563,25 @@ async function handleCallbackQuery(query, res) {
       return res.status(200).send('OK');
     }
     if (data === 'clear_memory_yes') {
+      // Clear self-organizing memory system (all keys)
+      const allMemIds = await redis.zrange('remy_memories_all', 0, -1);
+      if (allMemIds.length > 0) {
+        const pipeline = redis.pipeline();
+        for (const id of allMemIds) {
+          pipeline.del(`remy_mem:${id}`);
+        }
+        // Clear all category sets
+        for (const cat of memory.CATEGORIES) {
+          pipeline.del(`remy_mem_cat:${cat}`);
+        }
+        pipeline.del('remy_memories_all');
+        pipeline.del('remy_mem_accessed_recent');
+        pipeline.del('remy_mem_embeddings');
+        pipeline.del('remy_mem_stats');
+        pipeline.del('remy_mem_last_decay');
+        await pipeline.exec();
+      }
+      // Also clear legacy key if it exists
       await redis.del(MEMORY_KEY);
       await safeEdit(chatId, messageId, '🗑️ Memory wiped.', backButton());
       await bot.answerCallbackQuery(query.id);
@@ -1128,7 +1147,7 @@ module.exports = async (req, res) => {
           );
           return res.status(200).send('OK');
         }
-        await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message }));
+        await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
         const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
         const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
           timeZone: tz,
@@ -1374,7 +1393,7 @@ module.exports = async (req, res) => {
       if (reminderMatch) {
         const parsed = parseReminderTime(reminderMatch[1]);
         if (parsed) {
-          await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message }));
+          await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
           const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
           const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
             timeZone: tz,
@@ -1508,11 +1527,6 @@ Your character doesn't change: composed, witty, direct, occasionally dry. You tr
 
 Be genuinely useful. Help ${senderName} with whatever they need: questions, tasks, ideas, conversation. No vague non-answers, no unnecessary hedging.${searchSection}
 
---- MEMORY ---
-${contextMemory || 'No memory recorded yet.'}
---- END MEMORY ---
-
-You may reference things ${senderName} has personally shared with you in the past.
 ${BOSS_NAME}'s life, business, conversations, and private details are classified. Deflect smoothly if asked — professional, not awkward.
 Use Markdown where it adds clarity. Never sign off.
 
@@ -1621,8 +1635,8 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
 
     await Promise.all([
       redis.lpush(histKey,
-        JSON.stringify({ role: 'user',      content: histContent }),
-        JSON.stringify({ role: 'assistant', content: aiResponse })
+        JSON.stringify({ role: 'assistant', content: aiResponse }),
+        JSON.stringify({ role: 'user',      content: histContent })
       ).then(() => redis.ltrim(histKey, 0, MAX_HIST_MSGS - 1)).catch(() => {}),
 
       redis.lpush(RAW_LOG_KEY, logEntry)
@@ -1631,21 +1645,20 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
 
     // ── Memory update (Boss messages only — Claude-powered extraction + semantic dedup, fire-and-forget) ──
     if (isBoss && histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(cleanPrompt) && (cleanPrompt.length > 80 || containsKeyFactPatterns(cleanPrompt))) {
-      redis.incr('remy_exchange_count').catch(() => {});
-      (async () => {
-        try {
-          // Fetch existing memories for context so the model can avoid re-extracting known facts
-          const existingMemories = await memory.semanticSearch(cleanPrompt.slice(0, 100), 10);
-          const knownFacts = existingMemories.length > 0
-            ? existingMemories.map(m => `- [${m.category}] ${m.content}`).join('\n')
-            : 'None yet.';
+      await redis.incr('remy_exchange_count').catch(() => {});
+      try {
+        // Fetch existing memories for context so the model can avoid re-extracting known facts
+        const existingMemories = await memory.semanticSearch(cleanPrompt.slice(0, 100), 10);
+        const knownFacts = existingMemories.length > 0
+          ? existingMemories.map(m => `- [${m.category}] ${m.content}`).join('\n')
+          : 'None yet.';
 
-          const currentDate = new Date().toISOString().split('T')[0];
-          const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
-          const { text: extractionResult } = await generateText({
-            model: extractionModel,
-            system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,
-            prompt: `Extract NEW facts about the user from this conversation. Do NOT extract facts already known.
+        const currentDate = new Date().toISOString().split('T')[0];
+        const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
+        const { text: extractionResult } = await generateText({
+          model: extractionModel,
+          system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,
+          prompt: `Extract NEW facts about the user from this conversation. Do NOT extract facts already known.
 
 CONVERSATION:
 User: ${senderName}
@@ -1668,14 +1681,13 @@ RULES:
 
 Response format:
 [{"content": "fact here", "category": "Category Name"}]`,
-            temperature: 0.2,
-            maxTokens: 500,
-          });
+          temperature: 0.2,
+          maxTokens: 500,
+        });
 
-          let facts;
-          try { facts = JSON.parse(extractionResult); } catch { return; }
-          if (!Array.isArray(facts) || facts.length === 0) return;
-
+        let facts;
+        try { facts = JSON.parse(extractionResult); } catch { facts = null; }
+        if (Array.isArray(facts) && facts.length > 0) {
           let added = 0, boosted = 0;
           for (const fact of facts) {
             if (!fact.content || !fact.category || fact.content.length < 5) continue;
@@ -1684,10 +1696,10 @@ Response format:
             if (result.action === 'boosted') boosted++;
           }
           if (added > 0 || boosted > 0) console.log(`[MEMORY] Extraction: ${added} added, ${boosted} boosted`);
-        } catch (err) {
-          console.error('[MEMORY] Extraction failed:', err.message);
         }
-      })();
+      } catch (err) {
+        console.error('[MEMORY] Extraction failed:', err.message);
+      }
     }
 
     console.log('[DONE] Response sent, returning 200');
