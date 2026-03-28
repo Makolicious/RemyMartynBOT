@@ -1,5 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
+const { zai } = require('zhipu-ai-provider');
+const { generateText } = require('ai');
+
+const CHAT_MODEL = zai('glm-4-plus');
 
 const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
@@ -17,6 +21,53 @@ const bot = new TelegramBot(process.env.TELEGRAM_TOKEN);
 const REMINDERS_KEY = 'remy_reminders';
 const CRON_JOBS_KEY = 'remy_cron_jobs';
 const CRON_PREFIX   = 'remy_cron:';
+
+// ── Web search for AI tasks ───────────────────────────────────────────────────
+
+async function cronWebSearch(query) {
+  const serperKey = process.env.SERPER_API_KEY;
+  if (!serperKey) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 5 }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = (data.organic || []).slice(0, 5).map(r => `${r.title}: ${r.snippet}`).join('\n');
+    return results || null;
+  } catch (err) {
+    console.error('[CRON] Web search failed:', err.message);
+    return null;
+  }
+}
+
+// Execute an AI task job — calls GLM (+ optional Serper) and returns the response
+async function executeAiTask(job) {
+  const bossName = process.env.BOSS_NAME || 'Mako';
+  const now = new Date();
+  const localTime = now.toLocaleString('en-US', {
+    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+
+  const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market)\b/i.test(job.message);
+  const searchResults = needsSearch ? await cronWebSearch(job.message) : null;
+  const searchSection = searchResults
+    ? `\n\nLIVE DATA (just fetched):\n${searchResults}\n`
+    : '';
+
+  const { text } = await generateText({
+    model: CHAT_MODEL,
+    system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}.${searchSection}`,
+    prompt: `Execute this scheduled task for ${bossName}: ${job.message}\n\nDeliver the result concisely. Use Markdown where it helps clarity.`,
+    maxTokens: 800,
+  });
+
+  return text;
+}
 
 // ── Next fire time calculator ────────────────────────────────────────────────
 
@@ -103,7 +154,18 @@ module.exports = async (req, res) => {
           continue;
         }
 
-        await bot.sendMessage(chatId, `\ud83d\udd01 *Scheduled:* ${job.message}`, { parse_mode: 'Markdown' });
+        let messageToSend;
+        if (job.jobType === 'ai_task') {
+          try {
+            messageToSend = await executeAiTask(job);
+          } catch (err) {
+            console.error(`[CRON] AI task failed for job ${jobId}:`, err.message);
+            messageToSend = `📅 *Scheduled task failed:* ${job.message}\n\n⚠️ ${err.message?.slice(0, 100)}`;
+          }
+        } else {
+          messageToSend = `🔄 *Scheduled:* ${job.message}`;
+        }
+        await bot.sendMessage(chatId, messageToSend, { parse_mode: 'Markdown' });
         processed++;
 
         // Update stats and reschedule

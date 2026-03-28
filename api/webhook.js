@@ -48,6 +48,8 @@ const DEDUP_PREFIX    = 'dedup_';
 const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
 const TIMEZONE_KEY    = 'remy_boss_timezone';
+const CRON_JOBS_KEY   = 'remy_cron_jobs';
+const CRON_PREFIX     = 'remy_cron:';
 
 const MAX_HIST_MSGS   = 8;
 const MAX_LOG_ENTRIES = 500;
@@ -206,6 +208,136 @@ function parseReminderTime(text) {
   const msg    = match[3].trim();
   const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
   return { ts: Date.now() + amount * ms, message: msg };
+}
+
+// Parse time string — supports HH:MM and 9am/9:30pm formats
+function parseTimeStr(input) {
+  const hhmm = input.match(/^(\d{1,2}):(\d{2})$/);
+  if (hhmm) {
+    const h = parseInt(hhmm[1]), m = parseInt(hhmm[2]);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59)
+      return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  const ampm = input.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (ampm) {
+    let h = parseInt(ampm[1]);
+    const m = parseInt(ampm[2] || '0');
+    if (ampm[3].toLowerCase() === 'pm' && h !== 12) h += 12;
+    if (ampm[3].toLowerCase() === 'am' && h === 12) h = 0;
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59)
+      return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  return null;
+}
+
+// Parse day name or number (0=Sun … 6=Sat) for weekly jobs
+function parseDayOfWeek(input) {
+  const days = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2,
+                 wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5,
+                 sat: 6, saturday: 6 };
+  const n = parseInt(input);
+  if (!isNaN(n) && n >= 0 && n <= 6) return n;
+  return days[input.toLowerCase()] ?? null;
+}
+
+// Calculate next fire timestamp for a new cron job
+function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
+  const [hours, minutes] = time.split(':').map(Number);
+  const now = new Date();
+  let next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+
+  switch (repeat) {
+    case 'daily':
+      return next.getTime();
+    case 'weekdays':
+      while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+      return next.getTime();
+    case 'weekly': {
+      const targetDay = parseInt(dayOfWeek) || 1;
+      while (next.getDay() !== targetDay) next.setDate(next.getDate() + 1);
+      return next.getTime();
+    }
+    case 'monthly': {
+      const targetDate = parseInt(dayOfMonth) || 1;
+      if (next.getDate() > targetDate || next <= now) next.setMonth(next.getMonth() + 1);
+      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+      next.setDate(Math.min(targetDate, lastDay));
+      return next.getTime();
+    }
+    default:
+      return next.getTime();
+  }
+}
+
+// Parse /schedule command args: <repeat> [day/date] <time> <message>
+function parseCronCommand(input) {
+  const parts = input.trim().split(/\s+/);
+  if (parts.length < 3) return null;
+
+  const repeat = parts[0].toLowerCase();
+  if (!['daily', 'weekdays', 'weekly', 'monthly'].includes(repeat)) return null;
+
+  let timeStr, dayOfWeek = null, dayOfMonth = null, messageStart;
+
+  if (repeat === 'weekly') {
+    if (parts.length < 4) return null;
+    dayOfWeek = parseDayOfWeek(parts[1]);
+    if (dayOfWeek === null) return null;
+    timeStr = parseTimeStr(parts[2]);
+    if (!timeStr) return null;
+    messageStart = 3;
+  } else if (repeat === 'monthly') {
+    if (parts.length < 4) return null;
+    dayOfMonth = parseInt(parts[1]);
+    if (isNaN(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return null;
+    timeStr = parseTimeStr(parts[2]);
+    if (!timeStr) return null;
+    messageStart = 3;
+  } else {
+    timeStr = parseTimeStr(parts[1]);
+    if (!timeStr) return null;
+    messageStart = 2;
+  }
+
+  const message = parts.slice(messageStart).join(' ').trim();
+  if (!message) return null;
+
+  return { repeat, time: timeStr, dayOfWeek, dayOfMonth, message };
+}
+
+// Parse natural language recurring schedules
+// Handles: "every day at 9am ...", "daily at 8:00 ...", "every monday at 10am ...", "every weekday at 9am ..."
+function parseCronNL(input) {
+  const text = input.trim();
+
+  const dailyMatch = text.match(
+    /^(?:every\s+(?:day|morning|evening|night)|daily|each\s+day)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-,:]?\s*(?:to\s+|send\s+me\s+)?(.+)$/i
+  );
+  if (dailyMatch) {
+    const timeStr = parseTimeStr(dailyMatch[1].trim());
+    if (timeStr) return { repeat: 'daily', time: timeStr, dayOfWeek: null, dayOfMonth: null, message: dailyMatch[2].trim() };
+  }
+
+  const weekdayMatch = text.match(
+    /^every\s+weekdays?\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-,:]?\s*(?:to\s+)?(.+)$/i
+  );
+  if (weekdayMatch) {
+    const timeStr = parseTimeStr(weekdayMatch[1].trim());
+    if (timeStr) return { repeat: 'weekdays', time: timeStr, dayOfWeek: null, dayOfMonth: null, message: weekdayMatch[2].trim() };
+  }
+
+  const weeklyMatch = text.match(
+    /^every\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-,:]?\s*(?:to\s+)?(.+)$/i
+  );
+  if (weeklyMatch) {
+    const dayOfWeek = parseDayOfWeek(weeklyMatch[1]);
+    const timeStr = parseTimeStr(weeklyMatch[2].trim());
+    if (timeStr && dayOfWeek !== null) return { repeat: 'weekly', time: timeStr, dayOfWeek, dayOfMonth: null, message: weeklyMatch[3].trim() };
+  }
+
+  return null;
 }
 
 // Format plan for Telegram display
@@ -1206,6 +1338,103 @@ module.exports = async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // ── /schedule <repeat> [day] <time> <message> ────────────────────────
+      if (text.startsWith('/schedule ')) {
+        const args = text.slice(10).trim();
+        const parsed = parseCronCommand(args);
+        if (!parsed) {
+          await bot.sendMessage(chatId,
+            `⚠️ *Schedule format:*\n` +
+            `\`/schedule daily 09:00 Morning news\`\n` +
+            `\`/schedule weekdays 08:30 Check emails\`\n` +
+            `\`/schedule weekly mon 10:00 Weekly review\`\n` +
+            `\`/schedule monthly 1 09:00 Monthly report\``,
+            { parse_mode: 'Markdown' }
+          );
+          return res.status(200).send('OK');
+        }
+
+        const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const nextFire = calculateNextFire(parsed.time, parsed.repeat, parsed.dayOfWeek, parsed.dayOfMonth);
+        const isTask = needsWebSearch(parsed.message) || /\b(send|get|fetch|summary|summarize|remind|tell|show|check|report|news|weather|briefing)\b/i.test(parsed.message);
+
+        await redis.hset(`${CRON_PREFIX}${jobId}`,
+          'message', parsed.message,
+          'repeat', parsed.repeat,
+          'time', parsed.time,
+          'dayOfWeek', String(parsed.dayOfWeek ?? ''),
+          'dayOfMonth', String(parsed.dayOfMonth ?? ''),
+          'chatId', String(chatId),
+          'enabled', 'true',
+          'fireCount', '0',
+          'jobType', isTask ? 'ai_task' : 'message',
+          'createdAt', new Date().toISOString(),
+        );
+        await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+        const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        const dayLabel = parsed.repeat === 'weekly' ? ` (${dayNames[parsed.dayOfWeek]}s)` :
+                         parsed.repeat === 'monthly' ? ` (${parsed.dayOfMonth}th of month)` : '';
+        await bot.sendMessage(chatId,
+          `✅ *Scheduled:* "${parsed.message}"\n📅 ${parsed.repeat}${dayLabel} at \`${parsed.time}\`\n🔔 First run: ${nextStr}`,
+          { parse_mode: 'Markdown' }
+        );
+        return res.status(200).send('OK');
+      }
+
+      // ── /schedules — list all recurring jobs ─────────────────────────────
+      if (text === '/schedules') {
+        const jobIds = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+        if (!jobIds.length) {
+          await bot.sendMessage(chatId, '📅 No scheduled jobs.\n\nCreate one with `/schedule daily 09:00 Morning news`', { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const list = [];
+        for (let i = 0; i < jobIds.length; i += 2) {
+          try {
+            const jobId = jobIds[i];
+            const nextFire = parseInt(jobIds[i + 1]);
+            const job = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
+            if (!job || !job.message) continue;
+            const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+            const status = job.enabled === 'false' ? ' ⏸' : '';
+            const count = job.fireCount > 0 ? ` (fired ${job.fireCount}×)` : '';
+            list.push(`${Math.floor(i / 2) + 1}. [${job.repeat} @ ${job.time}]${status}${count}\n   "${job.message}"\n   Next: ${nextStr}`);
+          } catch { /* skip corrupt */ }
+        }
+        if (!list.length) {
+          await bot.sendMessage(chatId, '📅 No scheduled jobs.');
+          return res.status(200).send('OK');
+        }
+        await safeSend(chatId, `📅 *Scheduled jobs (${list.length}):*\n\n${list.join('\n\n')}`);
+        return res.status(200).send('OK');
+      }
+
+      // ── /deleteschedule <n> ───────────────────────────────────────────────
+      if (text.startsWith('/deleteschedule')) {
+        const n = parseInt(text.slice(15).trim());
+        if (isNaN(n) || n < 1) {
+          await bot.sendMessage(chatId, '⚠️ Usage: `/deleteschedule <number>` — use `/schedules` to see the list.', { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const all = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+        const totalJobs = Math.floor(all.length / 2);
+        if (n > totalJobs) {
+          await bot.sendMessage(chatId, `⚠️ Only ${totalJobs} scheduled job(s). Use \`/schedules\` to see the list.`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const jobId = all[(n - 1) * 2];
+        const job = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
+        await redis.del(`${CRON_PREFIX}${jobId}`);
+        await redis.zrem(CRON_JOBS_KEY, jobId);
+        const label = job?.message?.slice(0, 60) || jobId;
+        await bot.sendMessage(chatId, `🗑️ Deleted schedule ${n}: "${label}"`);
+        return res.status(200).send('OK');
+      }
+
       // ── /timezone <tz> ────────────────────────────────────────────────────
       if (text.startsWith('/timezone')) {
         const tz = text.slice(9).trim();
@@ -1259,6 +1488,13 @@ module.exports = async (req, res) => {
           `\`/remind in 2h to <task>\` — set reminder\n` +
           `\`/reminders\` — view pending reminders\n` +
           `\`/deletereminder <number>\` — delete a reminder\n\n` +
+          `*Scheduler* (recurring jobs)\n` +
+          `\`/schedule daily 09:00 <task>\` — daily job\n` +
+          `\`/schedule weekdays 08:30 <task>\` — weekdays only\n` +
+          `\`/schedule weekly mon 10:00 <task>\` — weekly\n` +
+          `\`/schedule monthly 1 09:00 <task>\` — monthly\n` +
+          `\`/schedules\` — list all scheduled jobs\n` +
+          `\`/deleteschedule <number>\` — delete a job\n\n` +
           `*History & Log*\n` +
           `\`/clearhistory\` — clear this chat's history\n` +
           `\`/log\` — last 10 log entries\n` +
@@ -1386,6 +1622,38 @@ module.exports = async (req, res) => {
       ? (message.caption || 'What do you see in this image?')
       : (voiceTranscript || text);
     const cleanPrompt = rawPrompt.replace(new RegExp(BOT_USERNAME, 'i'), '').trim() || 'Hello!';
+
+    // ── Natural language schedule detection (Boss only) ──────────────────
+    if (isBoss && !isPhoto) {
+      const cronNL = parseCronNL(cleanPrompt);
+      if (cronNL) {
+        const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const nextFire = calculateNextFire(cronNL.time, cronNL.repeat, cronNL.dayOfWeek, cronNL.dayOfMonth);
+        const isTask = needsWebSearch(cronNL.message) || /\b(send|get|fetch|summary|summarize|tell|show|check|report|news|weather|briefing)\b/i.test(cronNL.message);
+
+        await redis.hset(`${CRON_PREFIX}${jobId}`,
+          'message', cronNL.message,
+          'repeat', cronNL.repeat,
+          'time', cronNL.time,
+          'dayOfWeek', String(cronNL.dayOfWeek ?? ''),
+          'dayOfMonth', String(cronNL.dayOfMonth ?? ''),
+          'chatId', String(chatId),
+          'enabled', 'true',
+          'fireCount', '0',
+          'jobType', isTask ? 'ai_task' : 'message',
+          'createdAt', new Date().toISOString(),
+        );
+        await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+        const tzNL = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tzNL, dateStyle: 'medium', timeStyle: 'short' });
+        await bot.sendMessage(chatId,
+          `✅ *Scheduled:* "${cronNL.message}"\n📅 ${cronNL.repeat} at \`${cronNL.time}\` — first run: ${nextStr}\n\nUse \`/schedules\` to manage.`,
+          { parse_mode: 'Markdown' }
+        );
+        return res.status(200).send('OK');
+      }
+    }
 
     // ── Natural language reminder detection (Boss only, no AI call) ──────
     if (isBoss && !isPhoto) {
