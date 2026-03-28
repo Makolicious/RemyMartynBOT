@@ -1879,7 +1879,8 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
 
     // ── Model routing — Sonnet 4.6 for heavy tasks, GLM-4-Plus for chat ────
     const SONNET_TRIGGERS = /\b(write|draft|essay|article|story|poem|script|report|proposal|plan|strategy|roadmap|analyze|analyse|analysis|breakdown|compare|contrast|research|explain|summarize|summarise|translate|code|function|algorithm|debug|refactor|build|create|design|list.*steps|step.by.step|pros.and.cons|in.depth|detailed|thorough|comprehensive|long.form)\b/i;
-    const useSonnet = FALLBACK_MODEL && SONNET_TRIGGERS.test(cleanPrompt) && cleanPrompt.length > 40;
+    const hasWebSearch = !!searchResults;
+    const useSonnet = FALLBACK_MODEL && (hasWebSearch || (SONNET_TRIGGERS.test(cleanPrompt) && cleanPrompt.length > 40));
     const primaryModel = useSonnet ? FALLBACK_MODEL : CHAT_MODEL;
     const primaryName  = useSonnet ? 'Sonnet 4.6' : 'GLM-4-Plus';
     const secondaryModel = useSonnet ? null : FALLBACK_MODEL;
