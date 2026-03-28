@@ -773,8 +773,15 @@
       return s[(v - 20) % 10] || s[v] || s[0];
     }
 
+    // Convert stored UTC time (HH:MM) to browser local time
+    function utcToLocalTime(utcTime) {
+      const [h, m] = (utcTime || '09:00').split(':').map(Number);
+      const d = new Date(); d.setUTCHours(h, m, 0, 0);
+      return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    }
+
     function formatCronSchedule(job) {
-      const time = job.time || '09:00';
+      const time = utcToLocalTime(job.time);
       switch (job.repeat) {
         case 'daily': return `Every day at ${time}`;
         case 'weekdays': return `Weekdays at ${time}`;
@@ -853,7 +860,7 @@
                     <div class="flex flex-col sm:flex-row gap-3">
                       <div>
                         <label class="text-xs text-gray-400 block mb-1">Time</label>
-                        <input type="time" id="cron-edit-time-${j.id}" value="${j.time}" class="px-3 py-2 rounded-lg">
+                        <input type="time" id="cron-edit-time-${j.id}" value="${utcToLocalTime(j.time)}" class="px-3 py-2 rounded-lg">
                       </div>
                       <div>
                         <label class="text-xs text-gray-400 block mb-1">Repeat</label>
@@ -972,8 +979,13 @@
           loadScheduler();
         }
       } else {
-        const time = document.getElementById('schedTime').value;
-        if (!time) { showToast('Pick a time', 'error'); return; }
+        const localTime = document.getElementById('schedTime').value;
+        if (!localTime) { showToast('Pick a time', 'error'); return; }
+
+        // Convert local time to UTC — server schedules in UTC
+        const [lh, lm] = localTime.split(':').map(Number);
+        const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
+        const time = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
 
         const dayOfWeek = document.getElementById('schedDayOfWeek').value;
         const dayOfMonth = document.getElementById('schedDayOfMonth').value;
@@ -1060,11 +1072,16 @@
 
     async function saveCronJob(jobId) {
       const message = document.getElementById(`cron-edit-msg-${jobId}`).value.trim();
-      const time = document.getElementById(`cron-edit-time-${jobId}`).value;
+      const localTime = document.getElementById(`cron-edit-time-${jobId}`).value;
       const repeat = document.getElementById(`cron-edit-repeat-${jobId}`).value;
       const dayOfWeek = document.getElementById(`cron-edit-dow-${jobId}`).value;
       const dayOfMonth = document.getElementById(`cron-edit-dom-${jobId}`).value;
-      if (!message || !time) { showToast('Message and time required', 'error'); return; }
+      if (!message || !localTime) { showToast('Message and time required', 'error'); return; }
+
+      // Convert local time to UTC
+      const [lh, lm] = localTime.split(':').map(Number);
+      const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
+      const time = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
 
       const data = await apiCall(`/cron-jobs/${jobId}`, {
         method: 'PUT',
