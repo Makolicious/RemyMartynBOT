@@ -155,7 +155,7 @@ module.exports = async (req, res) => {
         }
 
         let messageToSend;
-        if (job.jobType === 'ai_task') {
+        if (job.jobType !== 'message') {
           try {
             messageToSend = await executeAiTask(job);
           } catch (err) {

@@ -511,6 +511,7 @@ module.exports = async (req, res) => {
         'dayOfWeek', dayOfWeek || '',
         'dayOfMonth', dayOfMonth || '',
         'chatId', chatId || '',
+        'jobType', 'ai_task',
         'enabled', 'true',
         'fireCount', '0',
         'createdAt', new Date().toISOString(),
