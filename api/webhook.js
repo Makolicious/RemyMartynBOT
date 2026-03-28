@@ -1725,7 +1725,7 @@ module.exports = async (req, res) => {
 
     // Fetch memory, history, timezone, and web search — each with individual fallback
     // Check if user is asking about scheduled tasks
-    const askingAboutSchedules = isBoss && /\b(cron|schedule[ds]?|recurring|tasks?|jobs?|what.*scheduled|list.*schedule|my.*schedule|active.*task)\b/i.test(cleanPrompt);
+    const askingAboutSchedules = isBoss && /\b(cron|schedule[ds]?|recurring|tasks?|jobs?|what.*scheduled|list.*schedule|my.*schedule|active.*task|edit.*schedule|change.*time|delete.*schedule|remove.*schedule|cancel.*schedule|update.*schedule|move.*time)\b/i.test(cleanPrompt);
 
     const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw] = await Promise.all([
       buildContextMemory(cleanPrompt),
@@ -1825,7 +1825,20 @@ To CREATE a new scheduled task:
 5. NEVER include the [SCHEDULE:...] tag until you have ALL required details confirmed.
 
 To LIST scheduled tasks: just present them from the SCHEDULED TASKS section below — you already have the data.
-To EDIT or DELETE: tell ${BOSS_NAME} to use \`/editschedule <number>\` or \`/deleteschedule <number>\`, or the admin dashboard.${searchSection}${schedulesSection}
+
+To EDIT a scheduled task, include this tag at the END of your message:
+[EDIT_SCHEDULE: number=N, repeat=daily|weekdays|weekly|monthly, time=HH:MM, day=mon|tue|...|1-31, task=new task description]
+- "number" is the job number from the SCHEDULED TASKS list above.
+- Only include fields that are changing. At minimum you need "number" plus at least one other field.
+- Examples:
+  [EDIT_SCHEDULE: number=1, time=08:00]
+  [EDIT_SCHEDULE: number=2, repeat=weekly, day=fri, time=17:00, task=End of week review]
+
+To DELETE a scheduled task, include this tag at the END of your message:
+[DELETE_SCHEDULE: number=N]
+- Example: [DELETE_SCHEDULE: number=1]
+
+CRITICAL: NEVER say you edited or deleted a task without including the tag. The tag is what actually makes it happen. Without the tag, NOTHING changes.${searchSection}${schedulesSection}
 
 --- MEMORY ---
 ${contextMemory || 'No memory recorded yet.'}
@@ -2018,6 +2031,49 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
       // Strip the tag from the response before sending
       aiResponse = aiResponse.replace(/\[SCHEDULE:.*?\]/i, '').trim();
       console.log(`[CRON] AI created job ${jobId}: "${task}" ${repeat} at ${utcTime} UTC`);
+    }
+
+    // ── Parse AI-generated EDIT commands ────────────────────────────────
+    const editTag = aiResponse.match(/\[EDIT_SCHEDULE:\s*number=(\d+)(?:,\s*repeat=(daily|weekdays|weekly|monthly))?(?:,\s*time=(\d{1,2}:\d{2}))?(?:,\s*day=(\w+))?(?:,\s*task=(.+?))?\]/i);
+    if (editTag && isBoss && cronJobsRaw.length > 0) {
+      const [, numStr, newRepeat, newLocalTime, newDayRaw, newTask] = editTag;
+      const idx = parseInt(numStr) - 1;
+      const jobId = cronJobsRaw[idx * 2];
+      if (jobId) {
+        const updates = {};
+        if (newRepeat) updates.repeat = newRepeat;
+        if (newLocalTime) {
+          const [lh, lm] = newLocalTime.split(':').map(Number);
+          const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
+          updates.time = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
+        }
+        if (newDayRaw && (newRepeat === 'weekly' || (!newRepeat))) updates.dayOfWeek = String(parseDayOfWeek(newDayRaw) ?? '');
+        if (newDayRaw && newRepeat === 'monthly') updates.dayOfMonth = newDayRaw;
+        if (newTask) updates.message = newTask.trim();
+
+        for (const [k, v] of Object.entries(updates)) {
+          await redis.hset(`${CRON_PREFIX}${jobId}`, k, v);
+        }
+        // Recalculate next fire
+        const jobData = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
+        const nextFire = calculateNextFire(jobData.time, jobData.repeat, jobData.dayOfWeek, jobData.dayOfMonth);
+        await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
+        console.log(`[CRON] AI edited job ${jobId}:`, updates);
+      }
+      aiResponse = aiResponse.replace(/\[EDIT_SCHEDULE:.*?\]/i, '').trim();
+    }
+
+    // ── Parse AI-generated DELETE commands ────────────────────────────────
+    const deleteTag = aiResponse.match(/\[DELETE_SCHEDULE:\s*number=(\d+)\]/i);
+    if (deleteTag && isBoss && cronJobsRaw.length > 0) {
+      const idx = parseInt(deleteTag[1]) - 1;
+      const jobId = cronJobsRaw[idx * 2];
+      if (jobId) {
+        await redis.del(`${CRON_PREFIX}${jobId}`);
+        await redis.zrem(CRON_JOBS_KEY, jobId);
+        console.log(`[CRON] AI deleted job ${jobId}`);
+      }
+      aiResponse = aiResponse.replace(/\[DELETE_SCHEDULE:.*?\]/i, '').trim();
     }
 
     // Send response to user
