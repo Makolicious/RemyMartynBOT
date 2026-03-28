@@ -1724,11 +1724,15 @@ module.exports = async (req, res) => {
     }
 
     // Fetch memory, history, timezone, and web search — each with individual fallback
-    const [memorySnapshot, rawHistory, savedTz, searchResults] = await Promise.all([
+    // Check if user is asking about scheduled tasks
+    const askingAboutSchedules = isBoss && /\b(cron|schedule[ds]?|recurring|tasks?|jobs?|what.*scheduled|list.*schedule|my.*schedule|active.*task)\b/i.test(cleanPrompt);
+
+    const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw] = await Promise.all([
       buildContextMemory(cleanPrompt),
       redis.lrange(`${HIST_PREFIX}${chatId}`, 0, MAX_HIST_MSGS - 1).catch(e => { console.error('Redis history fetch failed:', e.message); return []; }),
       redis.get(TIMEZONE_KEY).catch(e => { console.error('Redis timezone fetch failed:', e.message); return null; }),
       (!isPhoto && needsWebSearch(cleanPrompt)) ? webSearch(cleanPrompt) : Promise.resolve(null),
+      askingAboutSchedules ? redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES').catch(() => []) : Promise.resolve([]),
     ]);
 
     const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'UTC';
@@ -1763,6 +1767,27 @@ module.exports = async (req, res) => {
     const searchSection = searchResults
       ? `\n\n--- LIVE INTEL ---\n${searchResults}\n--- END LIVE INTEL ---\nUse this to answer current questions. Reference it naturally ("Just looked this up..." or "As of today...").`
       : '';
+
+    // Build active schedules context if asked
+    let schedulesSection = '';
+    if (cronJobsRaw.length > 0) {
+      const jobLines = [];
+      for (let i = 0; i < cronJobsRaw.length; i += 2) {
+        const jobId = cronJobsRaw[i];
+        const nextFire = parseInt(cronJobsRaw[i + 1]);
+        const job = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
+        if (!job || !job.message) continue;
+        const utcH = parseInt((job.time || '09:00').split(':')[0]);
+        const utcM = parseInt((job.time || '09:00').split(':')[1]);
+        const localD = new Date(); localD.setUTCHours(utcH, utcM, 0, 0);
+        const localTimeStr = localD.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: savedTz || 'America/New_York' });
+        const status = job.enabled === 'false' ? '⏸️ Paused' : '✅ Active';
+        jobLines.push(`${Math.floor(i / 2) + 1}. ${status} | ${job.repeat || 'daily'} at ${localTimeStr}${job.dayOfWeek ? ' (' + ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][job.dayOfWeek] + ')' : ''} — "${job.message}" (fired ${job.fireCount || 0}x)`);
+      }
+      if (jobLines.length > 0) {
+        schedulesSection = `\n\n--- YOUR ACTIVE SCHEDULED TASKS ---\n${jobLines.join('\n')}\n--- END SCHEDULED TASKS ---\nPresent these naturally when asked. You manage these — they are YOUR scheduled tasks, not system cron jobs.`;
+      }
+    }
 
     // ── System prompt ─────────────────────────────────────────────────────
     let systemPrompt;
@@ -1799,11 +1824,8 @@ To CREATE a new scheduled task:
 4. The time must be in the Boss's local time. The day field is only needed for weekly (day name) or monthly (1-31).
 5. NEVER include the [SCHEDULE:...] tag until you have ALL required details confirmed.
 
-To LIST, EDIT, or DELETE scheduled tasks, tell ${BOSS_NAME} to use:
-- \`/schedules\` — list all active scheduled jobs
-- \`/editschedule <number> daily 09:00 New task\` — edit a job
-- \`/deleteschedule <number>\` — delete a job
-These commands are also available on the admin dashboard.${searchSection}
+To LIST scheduled tasks: just present them from the SCHEDULED TASKS section below — you already have the data.
+To EDIT or DELETE: tell ${BOSS_NAME} to use \`/editschedule <number>\` or \`/deleteschedule <number>\`, or the admin dashboard.${searchSection}${schedulesSection}
 
 --- MEMORY ---
 ${contextMemory || 'No memory recorded yet.'}
