@@ -521,22 +521,41 @@ async function handleCallbackQuery(query, res) {
 
     // ── Reminders ──
     if (data === 'menu_reminders') {
-      const all = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
-      if (!all.length) {
-        await safeEdit(chatId, messageId, '⏰ No pending reminders.', backButton());
-      } else {
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
-        const list = [];
-        for (let i = 0; i < all.length; i += 2) {
+      const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+      const sections = [];
+
+      // One-time reminders
+      const oneTime = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+      if (oneTime.length) {
+        const lines = [];
+        for (let i = 0; i < oneTime.length; i += 2) {
           try {
-            const { message: msg } = JSON.parse(all[i]);
-            const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
-              timeZone: tz, dateStyle: 'medium', timeStyle: 'short',
-            });
-            list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
-          } catch { console.error('[REMINDERS] Corrupt entry at index', i / 2); }
+            const { message: msg } = JSON.parse(oneTime[i]);
+            const timeStr = new Date(parseInt(oneTime[i + 1])).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+            lines.push(`${lines.length + 1}. ⏰ [${timeStr}] ${msg}`);
+          } catch { console.error('[REMINDERS] Corrupt entry'); }
         }
-        await safeEdit(chatId, messageId, `⏰ *Pending reminders:*\n\n${list.join('\n')}`, backButton());
+        if (lines.length) sections.push(`*One-Time Reminders:*\n${lines.join('\n')}`);
+      }
+
+      // Recurring cron jobs
+      const cronAll = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+      if (cronAll.length) {
+        const lines = [];
+        for (let i = 0; i < cronAll.length; i += 2) {
+          const job = await redis.hgetall(`${CRON_PREFIX}${cronAll[i]}`);
+          if (!job || !job.message) continue;
+          const status = job.enabled === 'false' ? '⏸️' : '✅';
+          const nextStr = new Date(parseInt(cronAll[i + 1])).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+          lines.push(`${lines.length + 1}. ${status} ${job.repeat || 'daily'} — "${job.message}"\n   Next: ${nextStr}`);
+        }
+        if (lines.length) sections.push(`*Recurring Tasks:*\n${lines.join('\n')}`);
+      }
+
+      if (!sections.length) {
+        await safeEdit(chatId, messageId, '📅 No reminders or scheduled tasks.', backButton());
+      } else {
+        await safeEdit(chatId, messageId, `📅 *All Scheduled Items:*\n\n${sections.join('\n\n')}`, backButton());
       }
       await bot.answerCallbackQuery(query.id);
       return res.status(200).send('OK');
@@ -856,7 +875,11 @@ module.exports = async (req, res) => {
     const senderName = message.from?.first_name || 'Someone';
     const isPrivate  = message.chat.type === 'private';
     const isBoss     = senderId === AUTHORIZED_USER_ID;
-    const text       = message.text || '';
+    const rawText    = message.text || '';
+    // Strip @BotUsername suffix from commands (Telegram appends it even in DMs on some clients)
+    const text       = rawText.startsWith('/')
+      ? rawText.replace(new RegExp(BOT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '').trim()
+      : rawText;
 
     console.log(`[MSG] from=${senderName}(${senderId}) chat=${chatId} private=${isPrivate} isBoss=${isBoss} text="${text.slice(0,50)}" authId=${AUTHORIZED_USER_ID}`);
 
@@ -1291,7 +1314,7 @@ module.exports = async (req, res) => {
       }
 
       // ── /reminders ────────────────────────────────────────────────────────
-      if (text === '/reminders') {
+      if (text === '/reminders' || text === '/schedules') {
         const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
         const sections = [];
 
@@ -1401,34 +1424,7 @@ module.exports = async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // ── /schedules — list all recurring jobs ─────────────────────────────
-      if (text === '/schedules') {
-        const jobIds = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
-        if (!jobIds.length) {
-          await bot.sendMessage(chatId, '📅 No scheduled jobs.\n\nCreate one with `/schedule daily 09:00 Morning news`', { parse_mode: 'Markdown' });
-          return res.status(200).send('OK');
-        }
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
-        const list = [];
-        for (let i = 0; i < jobIds.length; i += 2) {
-          try {
-            const jobId = jobIds[i];
-            const nextFire = parseInt(jobIds[i + 1]);
-            const job = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
-            if (!job || !job.message) continue;
-            const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
-            const status = job.enabled === 'false' ? ' ⏸' : '';
-            const count = job.fireCount > 0 ? ` (fired ${job.fireCount}×)` : '';
-            list.push(`${Math.floor(i / 2) + 1}. [${job.repeat} @ ${job.time}]${status}${count}\n   "${job.message}"\n   Next: ${nextStr}`);
-          } catch { /* skip corrupt */ }
-        }
-        if (!list.length) {
-          await bot.sendMessage(chatId, '📅 No scheduled jobs.');
-          return res.status(200).send('OK');
-        }
-        await safeSend(chatId, `📅 *Scheduled jobs (${list.length}):*\n\n${list.join('\n\n')}`);
-        return res.status(200).send('OK');
-      }
+      // /schedules now handled by unified /reminders handler above
 
       // ── /editschedule <n> <repeat> [day] <time> <message> ────────────────
       if (text.startsWith('/editschedule ')) {
