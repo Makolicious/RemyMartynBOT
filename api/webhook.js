@@ -1723,8 +1723,33 @@ module.exports = async (req, res) => {
       }
     }
 
+    // ── Direct schedule listing — bypass AI to avoid hallucination ───────
+    if (isBoss && /\b(list|show|what|my|all|current|active)\b.*\b(task|tasks|schedule|schedules|cron|jobs|reminders?)\b/i.test(cleanPrompt)) {
+      const jobIds = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+      if (jobIds.length === 0) {
+        await bot.sendMessage(chatId, '📅 No scheduled tasks.\n\nCreate one by telling me what you want scheduled, or use `/schedule daily 09:00 Morning news`', { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      }
+      const savedTz = await redis.get(TIMEZONE_KEY) || 'America/New_York';
+      const lines = [];
+      for (let i = 0; i < jobIds.length; i += 2) {
+        const jobId = jobIds[i];
+        const nextFire = parseInt(jobIds[i + 1]);
+        const job = await redis.hgetall(`${CRON_PREFIX}${jobId}`);
+        if (!job || !job.message) continue;
+        const n = Math.floor(i / 2) + 1;
+        const status = job.enabled === 'false' ? '⏸️' : '✅';
+        const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: savedTz, dateStyle: 'medium', timeStyle: 'short' });
+        lines.push(`${n}. ${status} *${job.repeat || 'daily'}* — "${job.message}"\n   ⏰ Next: ${nextStr} | Fired: ${job.fireCount || 0}x`);
+      }
+      await bot.sendMessage(chatId,
+        `📅 *Your Scheduled Tasks (${lines.length}):*\n\n${lines.join('\n\n')}\n\n_Edit: \`/editschedule <n> ...\` | Delete: \`/deleteschedule <n>\`_`,
+        { parse_mode: 'Markdown' }
+      );
+      return res.status(200).send('OK');
+    }
+
     // Fetch memory, history, timezone, and web search — each with individual fallback
-    // Check if user is asking about scheduled tasks
     const askingAboutSchedules = isBoss && isPrivate;
 
     const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw] = await Promise.all([
