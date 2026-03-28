@@ -1413,6 +1413,54 @@ module.exports = async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // ── /editschedule <n> <repeat> [day] <time> <message> ────────────────
+      if (text.startsWith('/editschedule ')) {
+        const parts = text.slice(14).trim().split(/\s+/);
+        const n = parseInt(parts[0]);
+        if (isNaN(n) || n < 1) {
+          await bot.sendMessage(chatId, '⚠️ Usage: `/editschedule <number> daily 09:00 New task` — use `/schedules` to see numbers.', { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const newSpec = parseCronCommand(parts.slice(1).join(' '));
+        if (!newSpec) {
+          await bot.sendMessage(chatId,
+            `⚠️ *Edit format:*\n` +
+            `\`/editschedule 1 daily 09:00 New task description\`\n` +
+            `\`/editschedule 2 weekdays 08:30 Check emails\`\n` +
+            `\`/editschedule 3 weekly mon 10:00 Weekly review\``,
+            { parse_mode: 'Markdown' }
+          );
+          return res.status(200).send('OK');
+        }
+        const all = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+        const totalJobs = Math.floor(all.length / 2);
+        if (n > totalJobs) {
+          await bot.sendMessage(chatId, `⚠️ Only ${totalJobs} scheduled job(s). Use \`/schedules\` to see the list.`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const jobId = all[(n - 1) * 2];
+        const isTask = needsWebSearch(newSpec.message) || /\b(send|get|fetch|summary|summarize|tell|show|check|report|news|weather|briefing)\b/i.test(newSpec.message);
+        const nextFire = calculateNextFire(newSpec.time, newSpec.repeat, newSpec.dayOfWeek, newSpec.dayOfMonth);
+
+        await redis.hset(`${CRON_PREFIX}${jobId}`,
+          'message', newSpec.message,
+          'repeat', newSpec.repeat,
+          'time', newSpec.time,
+          'dayOfWeek', String(newSpec.dayOfWeek ?? ''),
+          'dayOfMonth', String(newSpec.dayOfMonth ?? ''),
+          'jobType', isTask ? 'ai_task' : 'message',
+        );
+        await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+        await bot.sendMessage(chatId,
+          `✅ *Schedule ${n} updated:* "${newSpec.message}"\n📅 ${newSpec.repeat} at \`${newSpec.time}\` — next run: ${nextStr}`,
+          { parse_mode: 'Markdown' }
+        );
+        return res.status(200).send('OK');
+      }
+
       // ── /deleteschedule <n> ───────────────────────────────────────────────
       if (text.startsWith('/deleteschedule')) {
         const n = parseInt(text.slice(15).trim());
@@ -1494,6 +1542,7 @@ module.exports = async (req, res) => {
           `\`/schedule weekly mon 10:00 <task>\` — weekly\n` +
           `\`/schedule monthly 1 09:00 <task>\` — monthly\n` +
           `\`/schedules\` — list all scheduled jobs\n` +
+          `\`/editschedule <n> daily 09:00 <task>\` — edit a job\n` +
           `\`/deleteschedule <number>\` — delete a job\n\n` +
           `*History & Log*\n` +
           `\`/clearhistory\` — clear this chat's history\n` +
