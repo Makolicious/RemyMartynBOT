@@ -244,9 +244,9 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Invalid date format' }, 400);
       }
 
-      const chatId = parseInt(process.env.BOSS_ID);
+      const chatId = parseInt(process.env.BOSS_ID || process.env.MY_TELEGRAM_ID);
       if (!chatId) {
-        return jsonResponse(res, { error: 'BOSS_ID not configured' }, 500);
+        return jsonResponse(res, { error: 'MY_TELEGRAM_ID not configured' }, 500);
       }
 
       await db.zadd(REMINDERS_KEY, timestamp, JSON.stringify({ chatId, message, id: Date.now() }));
@@ -273,7 +273,7 @@ module.exports = async (req, res) => {
       // Parse old entry for chatId
       let oldEntry = {};
       try { oldEntry = JSON.parse(originalRaw); } catch {}
-      const chatId = oldEntry.chatId || parseInt(process.env.BOSS_ID);
+      const chatId = oldEntry.chatId || parseInt(process.env.BOSS_ID || process.env.MY_TELEGRAM_ID);
 
       // Atomic: remove old, add new
       await db.zrem(REMINDERS_KEY, originalRaw);
@@ -498,9 +498,9 @@ module.exports = async (req, res) => {
       const repeatType = validRepeats.includes(repeat) ? repeat : 'daily';
 
       const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const chatId = parseInt(process.env.BOSS_ID);
+      const chatId = parseInt(process.env.BOSS_ID || process.env.MY_TELEGRAM_ID);
       if (!chatId) {
-        return jsonResponse(res, { error: 'BOSS_ID not configured' }, 500);
+        return jsonResponse(res, { error: 'MY_TELEGRAM_ID not configured' }, 500);
       }
       const nextFire = calculateNextFire(time, repeatType, dayOfWeek, dayOfMonth);
 

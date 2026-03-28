@@ -148,7 +148,7 @@ module.exports = async (req, res) => {
           continue;
         }
 
-        const chatId = parseInt(job.chatId) || parseInt(process.env.BOSS_ID);
+        const chatId = parseInt(job.chatId) || parseInt(process.env.BOSS_ID) || parseInt(process.env.MY_TELEGRAM_ID);
         if (!chatId) {
           console.error(`[CRON] No chatId for job ${jobId}`);
           continue;
