@@ -8,7 +8,7 @@ const CHAT_MODEL = zai('glm-4-plus');
 let FALLBACK_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic('claude-sonnet-4-6');
+  FALLBACK_MODEL = anthropic('claude-3-haiku-20240307');
 }
 
 const redis = new Redis(process.env.REDIS_URL, {
