@@ -113,6 +113,8 @@ module.exports = async (req, res) => {
   try {
     const now = Date.now();
     let processed = 0;
+    console.log(`[CRON] tick at ${new Date(now).toISOString()} — checking reminders + jobs`);
+    await redis.set('cron_last_tick', String(now));
 
     // ── One-shot reminders ─────────────────────────────────────────────
     const due = await redis.zrangebyscore(REMINDERS_KEY, 0, now);
