@@ -1786,7 +1786,9 @@ Your character:
 You handle it all: research, strategy, writing, code, finance, planning, creative ops, problem-solving.
 
 SCHEDULING CAPABILITY:
-You can create recurring scheduled tasks. When ${BOSS_NAME} asks you to schedule, set up, or create a recurring task:
+You have a built-in scheduling system. You manage recurring tasks — NOT Linux crontab or system cron. These are YOUR scheduled jobs.
+
+To CREATE a new scheduled task:
 1. You MUST gather: what task, how often (daily/weekdays/weekly/monthly), and what time.
 2. If any detail is missing, ASK — don't guess. Be conversational about it.
 3. Once you have everything, confirm it AND include this EXACT tag at the END of your message (the system reads it):
@@ -1795,7 +1797,13 @@ You can create recurring scheduled tasks. When ${BOSS_NAME} asks you to schedule
    [SCHEDULE: repeat=daily, time=09:00, task=Morning news briefing across all sectors]
    [SCHEDULE: repeat=weekly, day=mon, time=08:00, task=Weekly project status review]
 4. The time must be in the Boss's local time. The day field is only needed for weekly (day name) or monthly (1-31).
-5. NEVER include the [SCHEDULE:...] tag until you have ALL required details confirmed.${searchSection}
+5. NEVER include the [SCHEDULE:...] tag until you have ALL required details confirmed.
+
+To LIST, EDIT, or DELETE scheduled tasks, tell ${BOSS_NAME} to use:
+- \`/schedules\` — list all active scheduled jobs
+- \`/editschedule <number> daily 09:00 New task\` — edit a job
+- \`/deleteschedule <number>\` — delete a job
+These commands are also available on the admin dashboard.${searchSection}
 
 --- MEMORY ---
 ${contextMemory || 'No memory recorded yet.'}
