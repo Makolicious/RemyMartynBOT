@@ -261,10 +261,13 @@
       <section id="section-scheduler" class="section hidden">
         <div class="flex justify-between items-center mb-4">
           <h2 class="text-xl font-bold">⏰ Scheduler</h2>
-          <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-            <input type="checkbox" id="showPastReminders" onchange="loadScheduler()" class="rounded">
-            Show past
-          </label>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-500">Times are UTC — now: <span id="utcClock" class="text-gray-300 font-mono"></span></span>
+            <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+              <input type="checkbox" id="showPastReminders" onchange="loadScheduler()" class="rounded">
+              Show past
+            </label>
+          </div>
         </div>
 
         <!-- Create new scheduled task -->
@@ -442,6 +445,14 @@
         case 'users': loadUsers(); break;
       }
     }
+
+    // ── UTC Clock ──────────────────────────────────────────────────────
+    function tickUtcClock() {
+      const el = document.getElementById('utcClock');
+      if (el) el.textContent = new Date().toUTCString().slice(17, 25) + ' UTC';
+    }
+    tickUtcClock();
+    setInterval(tickUtcClock, 1000);
 
     // ── API Helper ─────────────────────────────────────────────────────
     async function apiCall(endpoint, options = {}) {
@@ -824,6 +835,7 @@
                     </div>
                   </div>
                   <div class="flex flex-col gap-2 ml-4">
+                    <button onclick="fireNowCronJob('${j.id}')" class="text-sm text-green-400 hover:text-green-300 transition font-bold">▶ Fire Now</button>
                     <button onclick="toggleCronJob('${j.id}')" class="text-sm ${j.enabled ? 'text-yellow-400 hover:text-yellow-300' : 'text-green-400 hover:text-green-300'} transition">${j.enabled ? 'Pause' : 'Resume'}</button>
                     <button onclick="editCronJob('${j.id}')" class="text-indigo-400 hover:text-indigo-300 text-sm transition">Edit</button>
                     <button onclick="deleteCronJob('${j.id}')" class="text-red-400 hover:text-red-300 text-sm transition">Delete</button>
@@ -1014,6 +1026,20 @@
     // ── Cron Job CRUD ─────────────────────────────────────────────────
     function editCronJob(jobId) {
       document.getElementById(`cron-edit-${jobId}`).classList.remove('hidden');
+    }
+
+    async function fireNowCronJob(jobId) {
+      const btn = event.target;
+      const orig = btn.textContent;
+      btn.textContent = '⏳ Firing...';
+      btn.disabled = true;
+      const data = await apiCall(`/cron-jobs/${jobId}/fire`, { method: 'POST' });
+      btn.textContent = orig;
+      btn.disabled = false;
+      if (data?.success) {
+        showToast('Fired! Check Telegram.');
+        loadScheduler();
+      }
     }
 
     function cancelCronEdit(jobId) {
