@@ -1292,25 +1292,42 @@ module.exports = async (req, res) => {
 
       // ── /reminders ────────────────────────────────────────────────────────
       if (text === '/reminders') {
-        const all = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
-        if (!all.length) {
-          await bot.sendMessage(chatId, '⏰ No pending reminders.');
-          return res.status(200).send('OK');
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const sections = [];
+
+        // One-time reminders
+        const oneTime = await redis.zrangebyscore(REMINDERS_KEY, Date.now(), '+inf', 'WITHSCORES');
+        if (oneTime.length) {
+          const lines = [];
+          for (let i = 0; i < oneTime.length; i += 2) {
+            try {
+              const { message: msg } = JSON.parse(oneTime[i]);
+              const timeStr = new Date(parseInt(oneTime[i + 1])).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+              lines.push(`${lines.length + 1}. ⏰ [${timeStr}] ${msg}`);
+            } catch { console.error('[REMINDERS] Corrupt entry'); }
+          }
+          if (lines.length) sections.push(`*One-Time Reminders:*\n${lines.join('\n')}`);
         }
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
-        const list = [];
-        for (let i = 0; i < all.length; i += 2) {
-          try {
-            const { message: msg } = JSON.parse(all[i]);
-            const timeStr = new Date(parseInt(all[i + 1])).toLocaleString('en-US', {
-              timeZone: tz,
-              dateStyle: 'medium',
-              timeStyle: 'short',
-            });
-            list.push(`${Math.floor(i / 2) + 1}. [${timeStr}] ${msg}`);
-          } catch { console.error('[REMINDERS] Corrupt entry at index', i / 2); }
+
+        // Recurring cron jobs
+        const cronAll = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
+        if (cronAll.length) {
+          const lines = [];
+          for (let i = 0; i < cronAll.length; i += 2) {
+            const job = await redis.hgetall(`${CRON_PREFIX}${cronAll[i]}`);
+            if (!job || !job.message) continue;
+            const status = job.enabled === 'false' ? '⏸️' : '✅';
+            const nextStr = new Date(parseInt(cronAll[i + 1])).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+            lines.push(`${lines.length + 1}. ${status} *${job.repeat || 'daily'}* — "${job.message}"\n   Next: ${nextStr} | Fired: ${job.fireCount || 0}x`);
+          }
+          if (lines.length) sections.push(`*Recurring Tasks:*\n${lines.join('\n')}`);
         }
-        await safeSend(chatId, `⏰ *Pending reminders:*\n\n${list.join('\n')}`);
+
+        if (!sections.length) {
+          await bot.sendMessage(chatId, '📅 No reminders or scheduled tasks.');
+        } else {
+          await safeSend(chatId, `📅 *All Scheduled Items:*\n\n${sections.join('\n\n')}`);
+        }
         return res.status(200).send('OK');
       }
 
