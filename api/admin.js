@@ -222,7 +222,7 @@ module.exports = async (req, res) => {
             message: entry.message,
             chatId: entry.chatId || null,
             isPast: score < Date.now(),
-            formattedDate: formatDate(new Date(score)),
+            formattedDate: score,
           });
         } catch { console.error('[ADMIN] Corrupt reminder entry at index', i / 2); }
       }
@@ -317,7 +317,7 @@ module.exports = async (req, res) => {
           const { ts, sender, msg, reply, isBoss, chat } = JSON.parse(e);
           return [{
             timestamp: ts,
-            formattedDate: formatDate(ts),
+            formattedDate: ts,
             sender,
             isBoss,
             chatType: chat,
@@ -474,8 +474,8 @@ module.exports = async (req, res) => {
             dayOfMonth: data.dayOfMonth || null,
             enabled: data.enabled !== 'false',
             nextFire,
-            nextFireFormatted: formatDate(new Date(nextFire)),
-            lastFired: data.lastFired ? formatDate(new Date(parseInt(data.lastFired))) : null,
+            nextFireFormatted: nextFire,
+            lastFired: data.lastFired ? parseInt(data.lastFired) : null,
             fireCount: parseInt(data.fireCount) || 0,
             createdAt: data.createdAt || null,
           });

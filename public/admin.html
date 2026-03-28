@@ -751,6 +751,12 @@
     let remindersCache = [];
     let cronJobsCache = [];
 
+    function localDate(v) {
+      const d = new Date(typeof v === 'number' ? v : Date.parse(v));
+      if (isNaN(d)) return String(v);
+      return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
     function escapeHtml(str) {
       const div = document.createElement('div');
       div.textContent = str;
@@ -829,8 +835,8 @@
                     <p class="text-gray-100 font-medium mb-1">${escapeHtml(j.message)}</p>
                     <p class="text-sm text-gray-400">${formatCronSchedule(j)}</p>
                     <div class="flex gap-4 mt-2 text-xs text-gray-500">
-                      <span>Next: <span class="text-yellow-400">${j.nextFireFormatted}</span></span>
-                      ${j.lastFired ? `<span>Last: ${j.lastFired}</span>` : ''}
+                      <span>Next: <span class="text-yellow-400">${localDate(j.nextFireFormatted)}</span></span>
+                      ${j.lastFired ? `<span>Last: ${localDate(j.lastFired)}</span>` : ''}
                       <span>Fired ${j.fireCount}x</span>
                     </div>
                   </div>
@@ -902,7 +908,7 @@
                 <div class="flex justify-between items-start">
                   <div class="flex-1">
                     <div class="flex items-center gap-2 mb-1">
-                      <span class="text-yellow-400 font-bold">${r.formattedDate}</span>
+                      <span class="text-yellow-400 font-bold">${localDate(r.formattedDate)}</span>
                       ${statusBadge}
                     </div>
                     <p class="text-gray-100">${escapeHtml(r.message)}</p>
@@ -1093,7 +1099,7 @@
             <div class="flex justify-between items-center mb-2">
               <div>
                 <span class="text-indigo-400 font-bold">${escapeHtml(entry.sender)}</span>
-                <span class="text-gray-400 text-sm ml-2">${escapeHtml(entry.formattedDate)}</span>
+                <span class="text-gray-400 text-sm ml-2">${localDate(entry.formattedDate)}</span>
                 <span class="text-xs px-2 py-1 rounded ${entry.chatType === 'private' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">${escapeHtml(entry.chatType)}</span>
               </div>
             </div>
