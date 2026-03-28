@@ -210,6 +210,25 @@ function parseReminderTime(text) {
   return { ts: Date.now() + amount * ms, message: msg };
 }
 
+// Convert a local time string (HH:MM) in a given timezone to UTC (HH:MM)
+// e.g., localTimeToUTC('09:00', 'America/New_York') → '13:00' (or '14:00' during EST)
+function localTimeToUTC(timeStr, timezone) {
+  const [h, m] = timeStr.split(':').map(Number);
+  // Create a date in UTC, then figure out the offset for the given timezone
+  const now = new Date();
+  // Build a date string that represents "today at h:m" in the target timezone
+  // by using Intl to find the current UTC offset for that timezone
+  const utcStr = now.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+  const localStr = now.toLocaleString('en-US', { timeZone: timezone, hour12: false });
+  const utcDate = new Date(utcStr);
+  const localDate = new Date(localStr);
+  const offsetMs = utcDate.getTime() - localDate.getTime();
+  // Apply offset: local + offset = UTC
+  const totalMinutes = h * 60 + m + Math.round(offsetMs / 60000);
+  const utcH = ((totalMinutes % 1440) + 1440) % 1440;
+  return String(Math.floor(utcH / 60)).padStart(2, '0') + ':' + String(utcH % 60).padStart(2, '0');
+}
+
 // Parse time string — supports HH:MM and 9am/9:30pm formats
 function parseTimeStr(input) {
   const hhmm = input.match(/^(\d{1,2}):(\d{2})$/);
@@ -620,7 +639,7 @@ async function handleCallbackQuery(query, res) {
 
     // ── Timezone ──
     if (data === 'menu_timezone') {
-      const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+      const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
       const now = new Date().toLocaleString('en-US', { timeZone: tz, dateStyle: 'full', timeStyle: 'short' });
       await safeEdit(chatId, messageId, `🌍 Timezone: \`${tz}\`\nLocal time: *${now}*\n\nTo change: \`/timezone America/New_York\``, backButton());
       await bot.answerCallbackQuery(query.id);
@@ -790,7 +809,7 @@ async function handleInlineQuery(query, res) {
 
   // Get current date/time
   const savedTz = await redis.get(TIMEZONE_KEY).catch(() => null);
-  const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'UTC';
+  const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'America/New_York';
   const now = new Date();
   const currentTime = now.toLocaleString('en-US', {
     timeZone: bossTimezone,
@@ -876,9 +895,9 @@ module.exports = async (req, res) => {
     const isPrivate  = message.chat.type === 'private';
     const isBoss     = senderId === AUTHORIZED_USER_ID;
     const rawText    = message.text || '';
-    // Strip @BotUsername suffix from commands (Telegram appends it even in DMs on some clients)
+    // Strip @BotUsername suffix from commands (Telegram appends it right after the command word)
     const text       = rawText.startsWith('/')
-      ? rawText.replace(new RegExp(BOT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '').trim()
+      ? rawText.replace(new RegExp('(^/\\w+)' + BOT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '$1').trim()
       : rawText;
 
     console.log(`[MSG] from=${senderName}(${senderId}) chat=${chatId} private=${isPrivate} isBoss=${isBoss} text="${text.slice(0,50)}" authId=${AUTHORIZED_USER_ID}`);
@@ -1303,7 +1322,7 @@ module.exports = async (req, res) => {
           return res.status(200).send('OK');
         }
         await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
         const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
           timeZone: tz,
           dateStyle: 'medium',
@@ -1394,14 +1413,17 @@ module.exports = async (req, res) => {
           return res.status(200).send('OK');
         }
 
+        // Convert boss's local time to UTC
+        const schedTz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const schedTimeUTC = localTimeToUTC(parsed.time, schedTz);
         const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const nextFire = calculateNextFire(parsed.time, parsed.repeat, parsed.dayOfWeek, parsed.dayOfMonth);
+        const nextFire = calculateNextFire(schedTimeUTC, parsed.repeat, parsed.dayOfWeek, parsed.dayOfMonth);
         const isTask = needsWebSearch(parsed.message) || /\b(send|get|fetch|summary|summarize|remind|tell|show|check|report|news|weather|briefing)\b/i.test(parsed.message);
 
         await redis.hset(`${CRON_PREFIX}${jobId}`,
           'message', parsed.message,
           'repeat', parsed.repeat,
-          'time', parsed.time,
+          'time', schedTimeUTC,
           'dayOfWeek', String(parsed.dayOfWeek ?? ''),
           'dayOfMonth', String(parsed.dayOfMonth ?? ''),
           'chatId', String(chatId),
@@ -1412,7 +1434,7 @@ module.exports = async (req, res) => {
         );
         await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
 
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
         const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
         const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
         const dayLabel = parsed.repeat === 'weekly' ? ` (${dayNames[parsed.dayOfWeek]}s)` :
@@ -1452,20 +1474,22 @@ module.exports = async (req, res) => {
           return res.status(200).send('OK');
         }
         const jobId = all[(n - 1) * 2];
+        const editTz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const editTimeUTC = localTimeToUTC(newSpec.time, editTz);
         const isTask = needsWebSearch(newSpec.message) || /\b(send|get|fetch|summary|summarize|tell|show|check|report|news|weather|briefing)\b/i.test(newSpec.message);
-        const nextFire = calculateNextFire(newSpec.time, newSpec.repeat, newSpec.dayOfWeek, newSpec.dayOfMonth);
+        const nextFire = calculateNextFire(editTimeUTC, newSpec.repeat, newSpec.dayOfWeek, newSpec.dayOfMonth);
 
         await redis.hset(`${CRON_PREFIX}${jobId}`,
           'message', newSpec.message,
           'repeat', newSpec.repeat,
-          'time', newSpec.time,
+          'time', editTimeUTC,
           'dayOfWeek', String(newSpec.dayOfWeek ?? ''),
           'dayOfMonth', String(newSpec.dayOfMonth ?? ''),
           'jobType', isTask ? 'ai_task' : 'message',
         );
         await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
 
-        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
         const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
         await bot.sendMessage(chatId,
           `✅ *Schedule ${n} updated:* "${newSpec.message}"\n📅 ${newSpec.repeat} at \`${newSpec.time}\` — next run: ${nextStr}`,
@@ -1500,7 +1524,7 @@ module.exports = async (req, res) => {
       if (text.startsWith('/timezone')) {
         const tz = text.slice(9).trim();
         if (!tz) {
-          const current = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+          const current = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
           const now = new Date().toLocaleString('en-US', { timeZone: current, dateStyle: 'full', timeStyle: 'short' });
           await bot.sendMessage(chatId, `🌍 Current timezone: \`${current}\`\nLocal time: *${now}*\n\nTo change: \`/timezone America/New_York\``, { parse_mode: 'Markdown' });
           return res.status(200).send('OK');
@@ -1685,18 +1709,21 @@ module.exports = async (req, res) => {
       : (voiceTranscript || text);
     const cleanPrompt = rawPrompt.replace(new RegExp(BOT_USERNAME, 'i'), '').trim() || 'Hello!';
 
-    // ── Natural language schedule detection (Boss only) ──────────────────
-    if (isBoss && !isPhoto) {
+    // ── Natural language schedule detection (Boss DMs only) ────────────────
+    if (isBoss && isPrivate && !isPhoto) {
       const cronNL = parseCronNL(cleanPrompt);
       if (cronNL) {
+        // Convert boss's local time to UTC for storage and scheduling
+        const tzNLconv = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const cronTimeUTC = localTimeToUTC(cronNL.time, tzNLconv);
         const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const nextFire = calculateNextFire(cronNL.time, cronNL.repeat, cronNL.dayOfWeek, cronNL.dayOfMonth);
+        const nextFire = calculateNextFire(cronTimeUTC, cronNL.repeat, cronNL.dayOfWeek, cronNL.dayOfMonth);
         const isTask = needsWebSearch(cronNL.message) || /\b(send|get|fetch|summary|summarize|tell|show|check|report|news|weather|briefing)\b/i.test(cronNL.message);
 
         await redis.hset(`${CRON_PREFIX}${jobId}`,
           'message', cronNL.message,
           'repeat', cronNL.repeat,
-          'time', cronNL.time,
+          'time', cronTimeUTC,
           'dayOfWeek', String(cronNL.dayOfWeek ?? ''),
           'dayOfMonth', String(cronNL.dayOfMonth ?? ''),
           'chatId', String(chatId),
@@ -1707,7 +1734,7 @@ module.exports = async (req, res) => {
         );
         await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
 
-        const tzNL = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+        const tzNL = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
         const nextStr = new Date(nextFire).toLocaleString('en-US', { timeZone: tzNL, dateStyle: 'medium', timeStyle: 'short' });
         await bot.sendMessage(chatId,
           `✅ *Scheduled:* "${cronNL.message}"\n📅 ${cronNL.repeat} at \`${cronNL.time}\` — first run: ${nextStr}\n\nUse \`/schedules\` to manage.`,
@@ -1717,14 +1744,14 @@ module.exports = async (req, res) => {
       }
     }
 
-    // ── Natural language reminder detection (Boss only, no AI call) ──────
-    if (isBoss && !isPhoto) {
+    // ── Natural language reminder detection (Boss DMs only, no AI call) ──
+    if (isBoss && isPrivate && !isPhoto) {
       const reminderMatch = cleanPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(in\s+\d+\s*(?:m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?.+)$/i);
       if (reminderMatch) {
         const parsed = parseReminderTime(reminderMatch[1]);
         if (parsed) {
           await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
-          const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'UTC';
+          const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
           const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
             timeZone: tz,
             dateStyle: 'medium',
@@ -1773,7 +1800,7 @@ module.exports = async (req, res) => {
       askingAboutSchedules ? redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES').catch(() => []) : Promise.resolve([]),
     ]);
 
-    const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'UTC';
+    const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'America/New_York';
     const now = new Date();
     const localTime = now.toLocaleString('en-US', {
       timeZone: bossTimezone,
@@ -1978,8 +2005,8 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
     const useSonnet = FALLBACK_MODEL && (hasWebSearch || (SONNET_TRIGGERS.test(cleanPrompt) && cleanPrompt.length > 40));
     const primaryModel = useSonnet ? FALLBACK_MODEL : CHAT_MODEL;
     const primaryName  = useSonnet ? 'Haiku' : 'GLM-4-Plus';
-    const secondaryModel = useSonnet ? null : FALLBACK_MODEL;
-    const secondaryName  = useSonnet ? null : 'Haiku';
+    const secondaryModel = useSonnet ? CHAT_MODEL : FALLBACK_MODEL;
+    const secondaryName  = useSonnet ? 'GLM-4-Plus' : 'Haiku';
 
     console.log(`[AI] Routing → ${primaryName} | prompt: ${cleanPrompt.length} chars | history: ${history.length}`);
     const aiStartTime = Date.now();
@@ -2040,11 +2067,9 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
     // ── Parse AI-generated schedule commands ──────────────────────────────
     const scheduleTag = aiResponse.match(/\[SCHEDULE:\s*repeat=(daily|weekdays|weekly|monthly),\s*time=(\d{1,2}:\d{2}),?\s*(?:day=(\w+),?\s*)?task=(.+?)\]/i);
     if (scheduleTag && isBoss) {
-      const [, repeat, localTime, dayRaw, task] = scheduleTag;
-      // Convert local time to UTC
-      const [lh, lm] = localTime.split(':').map(Number);
-      const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
-      const utcTime = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
+      const [, repeat, localTimeInput, dayRaw, task] = scheduleTag;
+      // Convert boss's local time (ET) to UTC using timezone-aware conversion
+      const utcTime = localTimeToUTC(localTimeInput, bossTimezone);
 
       const dayOfWeek = repeat === 'weekly' ? parseDayOfWeek(dayRaw || 'mon') : null;
       const dayOfMonth = repeat === 'monthly' ? (parseInt(dayRaw) || 1) : null;
@@ -2082,9 +2107,7 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
         const updates = {};
         if (newRepeat) updates.repeat = newRepeat;
         if (newLocalTime) {
-          const [lh, lm] = newLocalTime.split(':').map(Number);
-          const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
-          updates.time = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
+          updates.time = localTimeToUTC(newLocalTime, bossTimezone);
         }
         if (newDayRaw && (newRepeat === 'weekly' || (!newRepeat))) updates.dayOfWeek = String(parseDayOfWeek(newDayRaw) ?? '');
         if (newDayRaw && newRepeat === 'monthly') updates.dayOfMonth = newDayRaw;
