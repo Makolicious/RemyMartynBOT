@@ -1877,8 +1877,15 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
       currentMessage = { role: 'user', content: taggedPrompt };
     }
 
-    // ── AI call (primary: GLM-4-Plus, fallback: Sonnet 4.6) ──────────────
-    console.log(`[AI] Calling GLM-4-Plus | system: ${systemPrompt.length} chars | messages: ${history.length + 1}`);
+    // ── Model routing — Sonnet 4.6 for heavy tasks, GLM-4-Plus for chat ────
+    const SONNET_TRIGGERS = /\b(write|draft|essay|article|story|poem|script|report|proposal|plan|strategy|roadmap|analyze|analyse|analysis|breakdown|compare|contrast|research|explain|summarize|summarise|translate|code|function|algorithm|debug|refactor|build|create|design|list.*steps|step.by.step|pros.and.cons|in.depth|detailed|thorough|comprehensive|long.form)\b/i;
+    const useSonnet = FALLBACK_MODEL && SONNET_TRIGGERS.test(cleanPrompt) && cleanPrompt.length > 40;
+    const primaryModel = useSonnet ? FALLBACK_MODEL : CHAT_MODEL;
+    const primaryName  = useSonnet ? 'Sonnet 4.6' : 'GLM-4-Plus';
+    const secondaryModel = useSonnet ? null : FALLBACK_MODEL;
+    const secondaryName  = useSonnet ? null : 'Sonnet 4.6';
+
+    console.log(`[AI] Routing → ${primaryName} | prompt: ${cleanPrompt.length} chars | history: ${history.length}`);
     const aiStartTime = Date.now();
     const aiMessages = [...history, currentMessage];
 
@@ -1888,40 +1895,39 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
       const aiTimeout = setTimeout(() => abortController.abort(), 25000);
       try {
         const result = await generateText({
-          model: CHAT_MODEL,
+          model: primaryModel,
           system: systemPrompt,
           messages: aiMessages,
           abortSignal: abortController.signal,
         });
         aiResponse = result.text;
-        console.log(`[AI] GLM-4-Plus success in ${Date.now() - aiStartTime}ms`);
+        console.log(`[AI] ${primaryName} success in ${Date.now() - aiStartTime}ms`);
       } finally {
         clearTimeout(aiTimeout);
       }
     } catch (primaryErr) {
-      console.error(`[AI] GLM-4-Plus FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
+      console.error(`[AI] ${primaryName} FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
 
-      // Fallback to Sonnet 4.6 if available
-      if (FALLBACK_MODEL) {
-        console.log('[AI] Falling back to Sonnet 4.6...');
+      if (secondaryModel) {
+        console.log(`[AI] Falling back to ${secondaryName}...`);
         const fallbackStart = Date.now();
         try {
           const abortController2 = new AbortController();
           const fallbackTimeout = setTimeout(() => abortController2.abort(), 25000);
           try {
             const result = await generateText({
-              model: FALLBACK_MODEL,
+              model: secondaryModel,
               system: systemPrompt,
               messages: aiMessages,
               abortSignal: abortController2.signal,
             });
             aiResponse = result.text;
-            console.log(`[AI] Sonnet 4.6 fallback success in ${Date.now() - fallbackStart}ms`);
+            console.log(`[AI] ${secondaryName} fallback success in ${Date.now() - fallbackStart}ms`);
           } finally {
             clearTimeout(fallbackTimeout);
           }
         } catch (fallbackErr) {
-          console.error(`[AI] Sonnet 4.6 ALSO FAILED after ${Date.now() - fallbackStart}ms:`, fallbackErr.name, fallbackErr.message);
+          console.error(`[AI] ${secondaryName} ALSO FAILED after ${Date.now() - fallbackStart}ms:`, fallbackErr.name, fallbackErr.message);
           const msg = '⚠️ Both my primary and backup brains are down. Try again in a minute.';
           await bot.sendMessage(chatId, msg).catch(() => {});
           return res.status(200).send('OK');
