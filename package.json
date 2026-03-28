@@ -11,8 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.64",
-    "ai": "^5.0.0",
+    "@ai-sdk/anthropic": "^2.0.71",
+    "ai": "^5.0.138",
     "ioredis": "^5.3.2",
     "node-telegram-bot-api": "^0.63.0",
     "zhipu-ai-provider": "^0.2.2"
