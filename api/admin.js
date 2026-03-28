@@ -48,7 +48,7 @@ function getRedis() {
 const RAW_LOG_KEY     = 'remy_raw_log';
 const APPROVED_KEY    = 'approved_users';
 const BOSS_GRP_PREFIX = 'boss_group_';
-const NOTES_KEY       = 'remy_notes';
+
 const REMINDERS_KEY   = 'remy_reminders';
 const CRON_JOBS_KEY   = 'remy_cron_jobs';     // ZSET: score=nextFire, value=jobId
 const CRON_PREFIX     = 'remy_cron:';         // HASH per job
@@ -140,11 +140,10 @@ module.exports = async (req, res) => {
 
     // ── GET /stats ───────────────────────────────────────────────────
     if (path === '/stats' && req.method === 'GET') {
-      const [logLen, approvedCount, exchangeCount, notesLen, remindersLen, cronJobsLen] = await Promise.all([
+      const [logLen, approvedCount, exchangeCount, remindersLen, cronJobsLen] = await Promise.all([
         db.llen(RAW_LOG_KEY),
         db.scard(APPROVED_KEY),
         db.get('remy_exchange_count'),
-        db.llen(NOTES_KEY),
         db.zcard(REMINDERS_KEY),
         db.zcard(CRON_JOBS_KEY),
       ]);
@@ -153,53 +152,9 @@ module.exports = async (req, res) => {
         totalExchanges: exchangeCount || 0,
         logEntries: logLen,
         approvedUsers: approvedCount,
-        savedNotes: notesLen,
         pendingReminders: remindersLen,
         cronJobs: cronJobsLen,
       });
-    }
-
-    // ── GET /notes ───────────────────────────────────────────────────
-    if (path === '/notes' && req.method === 'GET') {
-      const entries = await db.lrange(NOTES_KEY, 0, 99);
-      const notes = entries.flatMap((e, i) => {
-        try {
-          const { ts, text } = JSON.parse(e);
-          return [{ id: i + 1, timestamp: ts, text }];
-        } catch { console.error('[ADMIN] Corrupt note entry at index', i); return []; }
-      });
-      return jsonResponse(res, { notes });
-    }
-
-    // ── POST /notes ──────────────────────────────────────────────────
-    if (path === '/notes' && req.method === 'POST') {
-      const body = req.body || {};
-      const text = body.text?.trim();
-
-      if (!text) {
-        return jsonResponse(res, { error: 'Note text required' }, 400);
-      }
-
-      await db.lpush(NOTES_KEY, JSON.stringify({
-        ts: new Date().toISOString(),
-        text,
-      }));
-      return jsonResponse(res, { success: true, message: 'Note added' });
-    }
-
-    // ── DELETE /notes/:id ────────────────────────────────────────────
-    if (path.startsWith('/notes/') && req.method === 'DELETE') {
-      const id = parseInt(path.split('/notes/')[1]);
-      const entries = await db.lrange(NOTES_KEY, 0, -1);
-
-      if (id < 1 || id > entries.length) {
-        return jsonResponse(res, { error: 'Invalid note ID' }, 400);
-      }
-
-      const target = entries[id - 1];
-      await db.lrem(NOTES_KEY, 1, target);
-
-      return jsonResponse(res, { success: true, message: `Note ${id} deleted` });
     }
 
     // ── GET /reminders ───────────────────────────────────────────────

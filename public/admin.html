@@ -171,7 +171,6 @@
       <div class="flex gap-3 overflow-x-auto pb-3 mb-6">
         <button onclick="showSection('stats')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="stats">📊 Stats</button>
         <button onclick="showSection('memories')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="memories">🧠 Memories</button>
-        <button onclick="showSection('notes')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="notes">📝 Notes</button>
         <button onclick="showSection('scheduler')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="scheduler">⏰ Scheduler</button>
         <button onclick="showSection('log')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="log">📋 Log</button>
         <button onclick="showSection('users')" class="nav-btn px-4 py-2.5 rounded-lg border border-white/10 whitespace-nowrap" data-section="users">👥 Users</button>
@@ -200,10 +199,6 @@
           <div class="stat-card card rounded-xl p-5">
             <div class="text-4xl font-bold text-yellow-400 tracking-tight" id="statApprovedUsers">-</div>
             <div class="text-gray-300 text-sm mt-1">Approved Users</div>
-          </div>
-          <div class="stat-card card rounded-xl p-5">
-            <div class="text-4xl font-bold text-blue-400 tracking-tight" id="statSavedNotes">-</div>
-            <div class="text-gray-300 text-sm mt-1">Saved Notes</div>
           </div>
           <div class="stat-card card rounded-xl p-5">
             <div class="text-4xl font-bold text-red-400 tracking-tight" id="statScheduled">-</div>
@@ -244,18 +239,7 @@
         <div id="memoriesList" class="space-y-2"></div>
       </section>
 
-      <!-- Notes Section -->
-      <section id="section-notes" class="section hidden">
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-xl font-bold">📝 Notes</h2>
-        </div>
-        <div class="card rounded-xl p-4 mb-4">
-          <h3 class="text-sm font-bold text-gray-400 mb-3">NEW NOTE</h3>
-          <textarea id="noteInput" rows="2" placeholder="Write a note..." class="w-full px-3 py-2 rounded-lg resize-none mb-3"></textarea>
-          <button onclick="addNote()" class="bg-indigo-500 hover:bg-indigo-600 px-6 py-2 rounded-lg font-bold transition">+ Add Note</button>
-        </div>
-        <div id="notesList" class="space-y-4"></div>
-      </section>
+
 
       <!-- Scheduler Section (One-shot reminders + Recurring cron jobs) -->
       <section id="section-scheduler" class="section hidden">
@@ -439,7 +423,6 @@
       switch(section) {
         case 'stats': loadStats(); break;
         case 'memories': loadMemories(); break;
-        case 'notes': loadNotes(); break;
         case 'scheduler': loadScheduler(); break;
         case 'log': loadLog(); break;
         case 'users': loadUsers(); break;
@@ -561,7 +544,7 @@
         document.getElementById('statLogEntries').textContent = data.logEntries;
         document.getElementById('statMemoryCount').textContent = memStats?.stats?.totalMemories || 0;
         document.getElementById('statApprovedUsers').textContent = data.approvedUsers;
-        document.getElementById('statSavedNotes').textContent = data.savedNotes;
+
         document.getElementById('statScheduled').textContent = (data.pendingReminders || 0) + (data.cronJobs || 0);
       }
     }
@@ -694,54 +677,6 @@
       if (data?.success) {
         showToast(`Decay applied to ${data.decayed} memories`);
         loadMemories();
-      }
-    }
-
-    // ── Notes ────────────────────────────────────────────────────────
-    async function loadNotes() {
-      const data = await apiCall('/notes');
-      if (data) {
-        const list = document.getElementById('notesList');
-        if (data.notes.length === 0) {
-          list.innerHTML = '<p class="text-gray-400 text-center py-8">No notes yet</p>';
-          return;
-        }
-        list.innerHTML = data.notes.map(n => `
-          <div class="card rounded-lg p-5">
-            <div class="text-indigo-300 text-sm font-medium mb-2">${escapeHtml(n.timestamp.slice(0, 10))}</div>
-            <p class="text-gray-100 mb-3 leading-relaxed">${escapeHtml(n.text)}</p>
-            <button onclick="deleteNote(${n.id})" class="text-red-400 hover:text-red-300 text-sm transition">Delete</button>
-          </div>
-        `).join('');
-      }
-    }
-
-    async function addNote() {
-      const input = document.getElementById('noteInput');
-      const text = input.value.trim();
-      if (!text) {
-        showToast('Write something first', 'error');
-        return;
-      }
-
-      const data = await apiCall('/notes', {
-        method: 'POST',
-        body: JSON.stringify({ text })
-      });
-      if (data?.success) {
-        input.value = '';
-        loadNotes();
-        showToast('Note added!');
-      }
-    }
-
-    async function deleteNote(id) {
-      if (!confirm('Delete this note?')) return;
-
-      const data = await apiCall(`/notes/${id}`, { method: 'DELETE' });
-      if (data?.success) {
-        loadNotes();
-        showToast('Note deleted');
       }
     }
 

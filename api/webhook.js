@@ -45,7 +45,6 @@ const APPROVED_KEY    = 'approved_users';
 const BOSS_GRP_PREFIX = 'boss_group_';
 const HIST_PREFIX     = 'history_';
 const DEDUP_PREFIX    = 'dedup_';
-const NOTES_KEY       = 'remy_notes';
 const REMINDERS_KEY   = 'remy_reminders';
 const TIMEZONE_KEY    = 'remy_boss_timezone';
 const CRON_JOBS_KEY   = 'remy_cron_jobs';
@@ -112,7 +111,6 @@ const MAIN_MENU_KEYBOARD = {
   inline_keyboard: [
     [
       { text: '🧠 Memory',    callback_data: 'menu_memory' },
-      { text: '📝 Notes',     callback_data: 'menu_notes' },
       { text: '⏰ Reminders', callback_data: 'menu_reminders' },
     ],
     [
@@ -514,30 +512,6 @@ async function handleCallbackQuery(query, res) {
       return res.status(200).send('OK');
     }
 
-    // ── Notes ──
-    if (data === 'menu_notes') {
-      const entries = await redis.lrange(NOTES_KEY, 0, 19);
-      if (!entries.length) {
-        await safeEdit(chatId, messageId, '📝 No notes yet. Use `/note <text>` to save one.', backButton());
-      } else {
-        const notesList = entries.flatMap((e, i) => {
-          try {
-            const { ts, text: t } = JSON.parse(e);
-            return [`${i + 1}. [${ts.split('T')[0]}] ${t}`];
-          } catch { console.error('[NOTES] Corrupt entry at index', i); return []; }
-        }).join('\n');
-        const text = `📝 *Your notes:*\n\n${notesList}`;
-        if (text.length > 4000) {
-          await safeSend(chatId, text);
-          await bot.answerCallbackQuery(query.id, { text: 'See below ↓' });
-        } else {
-          await safeEdit(chatId, messageId, text, backButton());
-          await bot.answerCallbackQuery(query.id);
-        }
-      }
-      return res.status(200).send('OK');
-    }
-
     // ── Reminders ──
     if (data === 'menu_reminders') {
       const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
@@ -582,16 +556,15 @@ async function handleCallbackQuery(query, res) {
 
     // ── Stats ──
     if (data === 'menu_stats') {
-      const [logLen, memStr, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
+      const [logLen, memStr, approvedCount, exchangeCount, remindersLen] = await Promise.all([
         redis.llen(RAW_LOG_KEY), redis.get(MEMORY_KEY), redis.scard(APPROVED_KEY),
-        redis.get('remy_exchange_count'), redis.llen(NOTES_KEY), redis.zcard(REMINDERS_KEY),
+        redis.get('remy_exchange_count'), redis.zcard(REMINDERS_KEY),
       ]);
       const memKB = memStr ? (memStr.length / 1024).toFixed(1) : 0;
       const text = `📊 *Remy Stats*\n\n` +
         `💬 Total exchanges: *${exchangeCount || 0}*\n` +
         `📋 Log entries: *${logLen}*\n` +
         `🧠 Memory size: *${memKB} KB*\n` +
-        `📝 Saved notes: *${notesLen}*\n` +
         `⏰ Pending reminders: *${remindersLen}*\n` +
         `👥 Approved users: *${approvedCount}*`;
       await safeEdit(chatId, messageId, text, backButton());
@@ -704,11 +677,6 @@ async function handleCallbackQuery(query, res) {
         `\`/memory\` — view memory\n` +
         `\`/clearmemory\` — wipe memory\n` +
         `\`/rebuildmemory\` — rebuild from log\n\n` +
-        `*Notes*\n` +
-        `\`/note <text>\` — save a note\n` +
-        `\`/notes\` — view notes\n` +
-        `\`/editnote <n> <text>\` — edit a note\n` +
-        `\`/deletenote <n>\` — delete a note\n\n` +
         `*Reminders*\n` +
         `\`/remind in 2h to <task>\` — set reminder\n` +
         `\`/reminders\` — view reminders\n` +
@@ -1180,12 +1148,11 @@ module.exports = async (req, res) => {
 
       // ── /stats ────────────────────────────────────────────────────────────
       if (text === '/stats') {
-        const [logLen, memStr, approvedCount, exchangeCount, notesLen, remindersLen] = await Promise.all([
+        const [logLen, memStr, approvedCount, exchangeCount, remindersLen] = await Promise.all([
           redis.llen(RAW_LOG_KEY),
           redis.get(MEMORY_KEY),
           redis.scard(APPROVED_KEY),
           redis.get('remy_exchange_count'),
-          redis.llen(NOTES_KEY),
           redis.zcard(REMINDERS_KEY),
         ]);
         const memKB = memStr ? (memStr.length / 1024).toFixed(1) : 0;
@@ -1194,91 +1161,10 @@ module.exports = async (req, res) => {
           `💬 Total exchanges: *${exchangeCount || 0}*\n` +
           `📋 Log entries: *${logLen}*\n` +
           `🧠 Memory size: *${memKB} KB*\n` +
-          `📝 Saved notes: *${notesLen}*\n` +
           `⏰ Pending reminders: *${remindersLen}*\n` +
           `👥 Approved users: *${approvedCount}*`,
           { parse_mode: 'Markdown' }
         );
-        return res.status(200).send('OK');
-      }
-
-      // ── /note <text> ──────────────────────────────────────────────────────
-      if (text.startsWith('/note ')) {
-        const noteText = text.slice(6).trim();
-        if (!noteText) {
-          await bot.sendMessage(chatId, '⚠️ Usage: `/note <your note>`', { parse_mode: 'Markdown' });
-          return res.status(200).send('OK');
-        }
-        await redis.lpush(NOTES_KEY, JSON.stringify({ ts: new Date().toISOString(), text: noteText }));
-        await bot.sendMessage(chatId, '📝 Note saved.');
-        return res.status(200).send('OK');
-      }
-
-      // ── /notes ────────────────────────────────────────────────────────────
-      if (text === '/notes') {
-        const entries = await redis.lrange(NOTES_KEY, 0, 19);
-        if (!entries.length) {
-          await bot.sendMessage(chatId, '📝 No notes yet. Use `/note <text>` to save one.', { parse_mode: 'Markdown' });
-          return res.status(200).send('OK');
-        }
-        const notesList = entries.flatMap((e, i) => {
-          try {
-            const { ts, text: t } = JSON.parse(e);
-            return [`${i + 1}. [${ts.split('T')[0]}] ${t}`];
-          } catch { console.error('[NOTES] Corrupt entry at index', i); return []; }
-        }).join('\n');
-        await safeSend(chatId, `📝 *Your notes:*\n\n${notesList}`);
-        return res.status(200).send('OK');
-      }
-
-      // ── /editnote <n> <text> ──────────────────────────────────────────────
-      if (text.startsWith('/editnote')) {
-        const parts = text.slice(9).trim().match(/^(\d+)\s+(.+)$/s);
-        if (!parts) {
-          await bot.sendMessage(chatId, '⚠️ Usage: `/editnote <number> <new text>`', { parse_mode: 'Markdown' });
-          return res.status(200).send('OK');
-        }
-        const n = parseInt(parts[1]);
-        const newText = parts[2].trim();
-        const entries = await redis.lrange(NOTES_KEY, 0, -1);
-        if (n < 1 || n > entries.length) {
-          await bot.sendMessage(chatId, `⚠️ Only ${entries.length} note(s) saved.`);
-          return res.status(200).send('OK');
-        }
-        const updated = JSON.stringify({ ts: new Date().toISOString(), text: newText });
-        await redis.lset(NOTES_KEY, n - 1, updated);
-        await bot.sendMessage(chatId, `✏️ Note ${n} updated: "${newText.slice(0, 80)}"`);
-        return res.status(200).send('OK');
-      }
-
-      // ── /deletenote <n> ───────────────────────────────────────────────────
-      if (text.startsWith('/deletenote')) {
-        const n = parseInt(text.slice(11).trim());
-        if (isNaN(n) || n < 1) {
-          await bot.sendMessage(chatId, '⚠️ Usage: `/deletenote <number>` — use `/notes` to see numbers.', { parse_mode: 'Markdown' });
-          return res.status(200).send('OK');
-        }
-        const entries = await redis.lrange(NOTES_KEY, 0, -1);
-        if (n > entries.length) {
-          await bot.sendMessage(chatId, `⚠️ Only ${entries.length} note(s) saved.`);
-          return res.status(200).send('OK');
-        }
-        // Redis lists don't support direct index delete — use a placeholder then remove it
-        const target = entries[n - 1];
-        await redis.lrem(NOTES_KEY, 1, target);
-        try {
-          const { text: t } = JSON.parse(target);
-          await bot.sendMessage(chatId, `🗑️ Deleted note ${n}: "${t.slice(0, 80)}"`);
-        } catch {
-          await bot.sendMessage(chatId, `🗑️ Deleted note ${n}.`);
-        }
-        return res.status(200).send('OK');
-      }
-
-      // ── /clearnotes ───────────────────────────────────────────────────────
-      if (text === '/clearnotes') {
-        await redis.del(NOTES_KEY);
-        await bot.sendMessage(chatId, '🗑️ Notes cleared.');
         return res.status(200).send('OK');
       }
 
@@ -1563,12 +1449,6 @@ module.exports = async (req, res) => {
           `*Agent*\n` +
           `\`/agent plan <goal>\` — generate structured plan\n` +
           `\`/agent help\` — agent commands\n\n` +
-          `*Notes*\n` +
-          `\`/note <text>\` — save a note\n` +
-          `\`/notes\` — view notes (last 20)\n` +
-          `\`/editnote <number> <text>\` — edit a note\n` +
-          `\`/deletenote <number>\` — delete a single note\n` +
-          `\`/clearnotes\` — clear all notes\n\n` +
           `*Reminders*\n` +
           `\`/remind in 2h to <task>\` — set reminder\n` +
           `\`/reminders\` — view pending reminders\n` +
