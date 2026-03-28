@@ -305,7 +305,7 @@
               </div>
               <div id="schedDayOfMonthWrap" class="flex-shrink-0 hidden">
                 <label class="text-xs text-gray-400 block mb-1">Day of month</label>
-                <input type="number" id="schedDayOfMonth" min="1" max="31" value="1" class="px-3 py-2 rounded-lg w-20">
+                <select id="schedDayOfMonth" class="px-3 py-2 rounded-lg"></select>
               </div>
               <div class="flex items-end">
                 <button onclick="createScheduledTask()" class="bg-indigo-500 hover:bg-indigo-600 px-6 py-2 rounded-lg font-bold transition whitespace-nowrap">+ Add</button>
@@ -762,6 +762,18 @@
       }
     }
 
+    // Populate day-of-month dropdowns with ordinal labels (1st … 31st)
+    function buildDomOptions(selectedVal) {
+      return Array.from({ length: 31 }, (_, i) => {
+        const d = i + 1;
+        const sel = String(d) === String(selectedVal) ? ' selected' : '';
+        return `<option value="${d}"${sel}>${d}${ordinalSuffix(d)}</option>`;
+      }).join('');
+    }
+
+    // Init create-form day-of-month dropdown once
+    document.getElementById('schedDayOfMonth').innerHTML = buildDomOptions(1);
+
     function toggleSchedulerFields() {
       const type = document.getElementById('schedType').value;
       const isOnce = type === 'once';
@@ -837,7 +849,9 @@
                       </div>
                       <div id="cron-edit-dom-wrap-${j.id}" class="${j.repeat !== 'monthly' ? 'hidden' : ''}">
                         <label class="text-xs text-gray-400 block mb-1">Day of month</label>
-                        <input type="number" id="cron-edit-dom-${j.id}" min="1" max="31" value="${j.dayOfMonth || 1}" class="px-3 py-2 rounded-lg w-20">
+                        <select id="cron-edit-dom-${j.id}" class="px-3 py-2 rounded-lg">
+                          ${buildDomOptions(j.dayOfMonth || 1)}
+                        </select>
                       </div>
                     </div>
                     <div class="flex gap-2">
