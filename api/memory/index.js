@@ -154,9 +154,9 @@ async function backfillEmbeddings() {
 /**
  * Add a new memory entry (now also generates + stores an embedding)
  */
-async function addMemory(content, category, confidence = 80) {
+async function addMemory(content, category, confidence = 80, pinned = null) {
   const db = getRedis();
-  const memory = createMemory(content, category, confidence);
+  const memory = createMemory(content, category, confidence, pinned);
 
   // Store full entry
   await db.hset(KEYS.ENTRY(memory.id), {
@@ -182,12 +182,13 @@ async function addMemory(content, category, confidence = 80) {
   // Add to recent access (as creation)
   await db.zadd(KEYS.ACCESSED, Date.now(), memory.id);
 
-  // Generate and store embedding (fire-and-forget, don't block on failure)
-  generateEmbedding(`[${memory.category}] ${memory.content}`)
-    .then(vec => {
-      if (vec) db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
-    })
-    .catch(err => console.error('[MEMORY] Embedding failed:', err.message));
+  // Generate and store embedding
+  try {
+    const vec = await generateEmbedding(`[${memory.category}] ${memory.content}`);
+    if (vec) await db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
+  } catch (err) {
+    console.error('[MEMORY] Embedding failed:', err.message);
+  }
 
   // Update stats
   await incrementStat('total_memories');
@@ -337,7 +338,13 @@ async function updateMemory(id, updates) {
     throw new Error('Memory not found');
   }
 
-  const updated = { ...existing, ...updates };
+  // Whitelist allowed update fields to prevent injection
+  const ALLOWED_UPDATES = ['content', 'category', 'importance', 'confidence', 'pinned'];
+  const safeUpdates = {};
+  for (const key of ALLOWED_UPDATES) {
+    if (updates[key] !== undefined) safeUpdates[key] = updates[key];
+  }
+  const updated = { ...existing, ...safeUpdates };
 
   // Validate
   const validation = validateMemory(updated);
@@ -578,7 +585,8 @@ async function smartAddMemory(content, category, confidence = 85) {
     // Boost existing memory instead of adding duplicate
     await boostMemory(duplicate.id, duplicate);
     console.log(`[MEMORY] Dedup: boosted existing "${duplicate.content.slice(0, 40)}..." (sim: ${duplicate.similarity.toFixed(2)})`);
-    return { action: 'boosted', memory: duplicate };
+    const refreshed = await getMemory(duplicate.id, false);
+    return { action: 'boosted', memory: refreshed || duplicate };
   }
 
   const mem = await addMemory(content, category, confidence);

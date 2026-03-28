@@ -139,32 +139,29 @@ function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
   const [hours, minutes] = time.split(':').map(Number);
   const now = new Date();
   let next = new Date(now);
-  next.setHours(hours, minutes, 0, 0);
+  next.setUTCHours(hours, minutes, 0, 0);
 
   // Always move to at least tomorrow since we just fired
-  next.setDate(next.getDate() + 1);
+  next.setUTCDate(next.getUTCDate() + 1);
 
   switch (repeat) {
     case 'daily':
       return next.getTime();
     case 'weekdays':
-      while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+      while (next.getUTCDay() === 0 || next.getUTCDay() === 6) next.setUTCDate(next.getUTCDate() + 1);
       return next.getTime();
     case 'weekly':
       const targetDay = parseInt(dayOfWeek) || 1;
-      while (next.getDay() !== targetDay) next.setDate(next.getDate() + 1);
+      while (next.getUTCDay() !== targetDay) next.setUTCDate(next.getUTCDate() + 1);
       return next.getTime();
     case 'monthly':
       const targetDate = parseInt(dayOfMonth) || 1;
-      let targetMonth = next.getMonth();
-      // If we've already passed this day this month, move to next month
-      if (next.getDate() > targetDate || (next.getDate() === targetDate && new Date(now) >= next)) {
-        targetMonth++;
+      if (next.getUTCDate() > targetDate) {
+        next.setUTCDate(1); // prevent month rollover
+        next.setUTCMonth(next.getUTCMonth() + 1);
       }
-      next.setMonth(targetMonth);
-      // Clamp to last day of month if target day doesn't exist (e.g., 31st in April)
-      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(targetDate, lastDay));
+      const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+      next.setUTCDate(Math.min(targetDate, lastDay));
       return next.getTime();
     default:
       return next.getTime();
@@ -185,14 +182,30 @@ module.exports = async (req, res) => {
 
     for (const entry of due) {
       try {
-        const { chatId, message } = JSON.parse(entry);
-        if (typeof chatId !== 'number' || !message) throw new Error(`Invalid reminder data: ${entry}`);
-        await bot.sendMessage(chatId, `\u23f0 *Reminder:* ${message}`, { parse_mode: 'Markdown' });
+        const parsed = JSON.parse(entry);
+        const { chatId, message } = parsed;
+        if (!Number(chatId) || !message) {
+          // Corrupt entry — remove it
+          await redis.zrem(REMINDERS_KEY, entry);
+          continue;
+        }
+        try {
+          await bot.sendMessage(chatId, `\u23f0 *Reminder:* ${message}`, { parse_mode: 'Markdown' });
+        } catch (parseErr) {
+          if (parseErr.message?.includes('parse') || parseErr.response?.body?.description?.includes('parse')) {
+            await bot.sendMessage(chatId, `\u23f0 Reminder: ${message}`);
+          } else { throw parseErr; }
+        }
+        await redis.zrem(REMINDERS_KEY, entry);
         processed++;
       } catch (err) {
+        if (err instanceof SyntaxError) {
+          // Unparseable JSON — remove corrupt entry
+          await redis.zrem(REMINDERS_KEY, entry);
+        }
+        // Telegram send failed — leave in Redis to retry next cycle
         console.error('Failed to send reminder:', err.message);
       }
-      await redis.zrem(REMINDERS_KEY, entry);
     }
 
     // ── Recurring cron jobs ────────────────────────────────────────────
@@ -231,18 +244,31 @@ module.exports = async (req, res) => {
         } else {
           messageToSend = `🔄 *Scheduled:* ${job.message}`;
         }
-        await bot.sendMessage(chatId, messageToSend, { parse_mode: 'Markdown' });
+        try {
+          await bot.sendMessage(chatId, messageToSend, { parse_mode: 'Markdown' });
+        } catch (parseErr) {
+          if (parseErr.message?.includes('parse') || parseErr.response?.body?.description?.includes('parse')) {
+            await bot.sendMessage(chatId, messageToSend);
+          } else { throw parseErr; }
+        }
         processed++;
 
-        // Update stats and reschedule
+        // Update stats, reset fail counter, and reschedule
         const fireCount = (parseInt(job.fireCount) || 0) + 1;
-        await redis.hset(`${CRON_PREFIX}${jobId}`, 'fireCount', String(fireCount), 'lastFired', String(now));
+        await redis.hset(`${CRON_PREFIX}${jobId}`, 'fireCount', String(fireCount), 'lastFired', String(now), 'failCount', '0');
 
         const nextFire = calculateNextFire(job.time, job.repeat, job.dayOfWeek, job.dayOfMonth);
         await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
 
       } catch (err) {
         console.error(`[CRON] Failed to process job ${jobId}:`, err.message);
+        // Circuit breaker: disable after 5 consecutive failures
+        const failCount = parseInt(await redis.hget(`${CRON_PREFIX}${jobId}`, 'failCount') || '0') + 1;
+        await redis.hset(`${CRON_PREFIX}${jobId}`, 'failCount', String(failCount));
+        if (failCount >= 5) {
+          await redis.hset(`${CRON_PREFIX}${jobId}`, 'enabled', 'false');
+          console.error(`[CRON] Job ${jobId} disabled after ${failCount} consecutive failures`);
+        }
         // Reschedule to avoid getting stuck — push 1 hour forward
         await redis.zadd(CRON_JOBS_KEY, now + 3600000, jobId);
       }

@@ -73,28 +73,29 @@ function calculateNextFire(time, repeat, dayOfWeek, dayOfMonth) {
   const [hours, minutes] = time.split(':').map(Number);
   const now = new Date();
   let next = new Date(now);
-  next.setHours(hours, minutes, 0, 0);
+  next.setUTCHours(hours, minutes, 0, 0);
 
   // If today's fire time already passed, start from tomorrow
-  if (next <= now) next.setDate(next.getDate() + 1);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
 
   switch (repeat) {
     case 'daily':
       return next.getTime();
     case 'weekdays':
-      while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+      while (next.getUTCDay() === 0 || next.getUTCDay() === 6) next.setUTCDate(next.getUTCDate() + 1);
       return next.getTime();
     case 'weekly':
       const targetDay = parseInt(dayOfWeek) || 1;
-      while (next.getDay() !== targetDay) next.setDate(next.getDate() + 1);
+      while (next.getUTCDay() !== targetDay) next.setUTCDate(next.getUTCDate() + 1);
       return next.getTime();
     case 'monthly':
       const targetDate = parseInt(dayOfMonth) || 1;
-      if (next.getDate() > targetDate || next <= now) {
-        next.setMonth(next.getMonth() + 1);
+      if (next.getUTCDate() > targetDate) {
+        next.setUTCDate(1); // prevent month rollover
+        next.setUTCMonth(next.getUTCMonth() + 1);
       }
-      const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(targetDate, lastDay));
+      const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+      next.setUTCDate(Math.min(targetDate, lastDay));
       return next.getTime();
     default:
       return next.getTime();
@@ -230,16 +231,18 @@ module.exports = async (req, res) => {
       try { oldEntry = JSON.parse(originalRaw); } catch {}
       const chatId = oldEntry.chatId || parseInt(process.env.BOSS_ID || process.env.MY_TELEGRAM_ID);
 
-      // Atomic: remove old, add new
-      await db.zrem(REMINDERS_KEY, originalRaw);
-      await db.zadd(REMINDERS_KEY, newTimestamp, JSON.stringify({ chatId, message, id: Date.now() }));
+      // Atomic: remove old, add new in a single transaction
+      const pipeline = db.multi();
+      pipeline.zrem(REMINDERS_KEY, originalRaw);
+      pipeline.zadd(REMINDERS_KEY, newTimestamp, JSON.stringify({ chatId, message, id: Date.now() }));
+      await pipeline.exec();
       return jsonResponse(res, { success: true, message: 'Reminder updated' });
     }
 
     // ── DELETE /reminders/:id ────────────────────────────────────────
     if (path.startsWith('/reminders/') && req.method === 'DELETE') {
-      const body = req.body || {};
-      const { raw } = body;
+      const query = req.query || {};
+      const raw = query.raw || (req.body || {}).raw;
 
       // Prefer raw value for precise deletion
       if (raw) {
@@ -277,7 +280,7 @@ module.exports = async (req, res) => {
             isBoss,
             chatType: chat,
             message: msg,
-            reply: reply?.slice(0, 100) + (reply?.length > 100 ? '...' : ''),
+            reply: reply ? (reply.slice(0, 100) + (reply.length > 100 ? '...' : '')) : '',
           }];
         } catch { console.error('[ADMIN] Corrupt log entry, skipping'); return []; }
       });

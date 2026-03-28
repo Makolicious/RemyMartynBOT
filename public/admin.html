@@ -969,9 +969,9 @@
     async function deleteReminder(id) {
       if (!confirm('Delete this reminder?')) return;
       const r = remindersCache.find(r => r.id === id);
-      const data = await apiCall(`/reminders/${id}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ raw: r?.raw })
+      const rawParam = r?.raw ? `?raw=${encodeURIComponent(r.raw)}` : '';
+      const data = await apiCall(`/reminders/${id}${rawParam}`, {
+        method: 'DELETE'
       });
       if (data?.success) { showToast('Reminder deleted'); loadScheduler(); }
     }

@@ -119,12 +119,15 @@ function createMemory(content, category, confidence = 80, pinned = null) {
  */
 function normalizeCategory(category) {
   if (!category) return 'Notes & Miscellaneous';
+  const lower = category.toLowerCase().trim();
 
-  const normalized = CATEGORIES.find(c =>
-    c.toLowerCase().includes(category.toLowerCase())
-  );
+  // Exact match first
+  const exact = CATEGORIES.find(c => c.toLowerCase() === lower);
+  if (exact) return exact;
 
-  return normalized || 'Notes & Miscellaneous';
+  // Then substring match
+  const partial = CATEGORIES.find(c => c.toLowerCase().includes(lower));
+  return partial || 'Notes & Miscellaneous';
 }
 
 /**
