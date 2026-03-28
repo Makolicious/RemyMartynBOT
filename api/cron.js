@@ -100,12 +100,14 @@ async function executeAiTask(job) {
   const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary)\b/i.test(job.message);
   let searchSection = '';
   if (needsSearch) {
+    const isLocal = /\blocal\b/i.test(job.message);
     const results = await Promise.all([
       cronNewsSearch('top breaking news today'),
       cronNewsSearch('US politics economy news today'),
       cronNewsSearch('technology AI business news today'),
       cronNewsSearch('world international news today'),
       cronWebSearch('most important news today ' + new Date().toISOString().slice(0, 10)),
+      isLocal ? cronNewsSearch('Miami South Florida Hialeah news today') : Promise.resolve(null),
     ]);
     const combined = results.filter(Boolean).join('\n---\n');
     if (combined) {
@@ -121,7 +123,7 @@ async function executeAiTask(job) {
 
   const { text } = await generateText({
     model: taskModel,
-    system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}.${searchSection}`,
+    system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}. ${bossName} is based in South Florida (Miami / Hialeah). "Local" always means Miami-Dade / South Florida.${searchSection}`,
     prompt: `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`,
     maxTokens: 2500,
   });
