@@ -1724,7 +1724,7 @@ module.exports = async (req, res) => {
     }
 
     // ── Direct schedule listing — bypass AI to avoid hallucination ───────
-    if (isBoss && /\b(list|show|what|my|all|current|active)\b.*\b(task|tasks|schedule|schedules|cron|jobs|reminders?)\b/i.test(cleanPrompt)) {
+    if (isBoss && /\b(tasks?|schedules?|cron\s*jobs?|reminders?|scheduled)\b/i.test(cleanPrompt) && cleanPrompt.length < 80) {
       const jobIds = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES');
       if (jobIds.length === 0) {
         await bot.sendMessage(chatId, '📅 No scheduled tasks.\n\nCreate one by telling me what you want scheduled, or use `/schedule daily 09:00 Morning news`', { parse_mode: 'Markdown' });
