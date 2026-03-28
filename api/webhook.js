@@ -1782,7 +1782,19 @@ Your character:
 - Discreet — what's said here stays here
 - Read his mood from how he writes: stressed → tight and efficient; relaxed → ease up and match the energy; frustrated → don't add fuel
 
-You handle it all: research, strategy, writing, code, finance, planning, creative ops, problem-solving.${searchSection}
+You handle it all: research, strategy, writing, code, finance, planning, creative ops, problem-solving.
+
+SCHEDULING CAPABILITY:
+You can create recurring scheduled tasks. When ${BOSS_NAME} asks you to schedule, set up, or create a recurring task:
+1. You MUST gather: what task, how often (daily/weekdays/weekly/monthly), and what time.
+2. If any detail is missing, ASK — don't guess. Be conversational about it.
+3. Once you have everything, confirm it AND include this EXACT tag at the END of your message (the system reads it):
+   [SCHEDULE: repeat=daily|weekdays|weekly|monthly, time=HH:MM, day=mon|tue|...|1-31, task=the task description]
+   Examples:
+   [SCHEDULE: repeat=daily, time=09:00, task=Morning news briefing across all sectors]
+   [SCHEDULE: repeat=weekly, day=mon, time=08:00, task=Weekly project status review]
+4. The time must be in the Boss's local time. The day field is only needed for weekly (day name) or monthly (1-31).
+5. NEVER include the [SCHEDULE:...] tag until you have ALL required details confirmed.${searchSection}
 
 --- MEMORY ---
 ${contextMemory || 'No memory recorded yet.'}
@@ -1940,6 +1952,41 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
         await bot.sendMessage(chatId, msg).catch(() => {});
         return res.status(200).send('OK');
       }
+    }
+
+    // ── Parse AI-generated schedule commands ──────────────────────────────
+    const scheduleTag = aiResponse.match(/\[SCHEDULE:\s*repeat=(daily|weekdays|weekly|monthly),\s*time=(\d{1,2}:\d{2}),?\s*(?:day=(\w+),?\s*)?task=(.+?)\]/i);
+    if (scheduleTag && isBoss) {
+      const [, repeat, localTime, dayRaw, task] = scheduleTag;
+      // Convert local time to UTC
+      const [lh, lm] = localTime.split(':').map(Number);
+      const tmp = new Date(); tmp.setHours(lh, lm, 0, 0);
+      const utcTime = tmp.getUTCHours().toString().padStart(2, '0') + ':' + tmp.getUTCMinutes().toString().padStart(2, '0');
+
+      const dayOfWeek = repeat === 'weekly' ? parseDayOfWeek(dayRaw || 'mon') : null;
+      const dayOfMonth = repeat === 'monthly' ? (parseInt(dayRaw) || 1) : null;
+      const isTask = needsWebSearch(task) || /\b(send|get|fetch|summary|summarize|tell|show|check|report|news|weather|briefing|debrief|analyze)\b/i.test(task);
+
+      const jobId = `cj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const nextFire = calculateNextFire(utcTime, repeat, dayOfWeek, dayOfMonth);
+
+      await redis.hset(`${CRON_PREFIX}${jobId}`,
+        'message', task.trim(),
+        'repeat', repeat,
+        'time', utcTime,
+        'dayOfWeek', String(dayOfWeek ?? ''),
+        'dayOfMonth', String(dayOfMonth ?? ''),
+        'chatId', String(chatId),
+        'enabled', 'true',
+        'fireCount', '0',
+        'jobType', isTask ? 'ai_task' : 'message',
+        'createdAt', new Date().toISOString(),
+      );
+      await redis.zadd(CRON_JOBS_KEY, nextFire, jobId);
+
+      // Strip the tag from the response before sending
+      aiResponse = aiResponse.replace(/\[SCHEDULE:.*?\]/i, '').trim();
+      console.log(`[CRON] AI created job ${jobId}: "${task}" ${repeat} at ${utcTime} UTC`);
     }
 
     // Send response to user
