@@ -5,6 +5,12 @@ const { generateText } = require('ai');
 
 const CHAT_MODEL = zai('glm-4-plus');
 
+let FALLBACK_MODEL = null;
+if (process.env.ANTHROPIC_API_KEY) {
+  const { anthropic } = require('@ai-sdk/anthropic');
+  FALLBACK_MODEL = anthropic('claude-sonnet-4-6-20250514');
+}
+
 const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
   commandTimeout: 10000,
@@ -44,26 +50,43 @@ async function cronWebSearch(query) {
   }
 }
 
-// Execute an AI task job — calls GLM (+ optional Serper) and returns the response
+// Execute an AI task job — Sonnet for quality, Serper for live data
 async function executeAiTask(job) {
   const bossName = process.env.BOSS_NAME || 'Mako';
+  const tzOffset = parseInt(process.env.TZ_OFFSET) || -4; // EDT default
   const now = new Date();
-  const localTime = now.toLocaleString('en-US', {
-    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+  const local = new Date(now.getTime() + tzOffset * 3600000);
+  const localTime = local.toLocaleString('en-US', {
+    timeZone: 'UTC', weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
 
-  const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market)\b/i.test(job.message);
-  const searchResults = needsSearch ? await cronWebSearch(job.message) : null;
-  const searchSection = searchResults
-    ? `\n\nLIVE DATA (just fetched):\n${searchResults}\n`
-    : '';
+  // Run multiple searches for better coverage on news tasks
+  const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary)\b/i.test(job.message);
+  let searchSection = '';
+  if (needsSearch) {
+    const queries = [
+      'top news today ' + new Date().toISOString().slice(0, 10),
+      'breaking news headlines today',
+      'technology business world news today',
+    ];
+    const results = await Promise.all(queries.map(q => cronWebSearch(q)));
+    const combined = results.filter(Boolean).join('\n\n');
+    if (combined) {
+      searchSection = `\n\nLIVE SEARCH RESULTS (fetched just now — use ONLY this data, do NOT make up news):\n${combined}\n`;
+    }
+  }
+
+  // Use Sonnet if available (better at synthesis), fall back to GLM
+  const taskModel = FALLBACK_MODEL || CHAT_MODEL;
+  const modelName = FALLBACK_MODEL ? 'Sonnet' : 'GLM';
+  console.log(`[CRON] AI task using ${modelName} | search: ${needsSearch} | hasResults: ${!!searchSection}`);
 
   const { text } = await generateText({
-    model: CHAT_MODEL,
+    model: taskModel,
     system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}.${searchSection}`,
-    prompt: `Execute this scheduled task for ${bossName}: ${job.message}\n\nDeliver the result concisely. Use Markdown where it helps clarity.`,
-    maxTokens: 800,
+    prompt: `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information. Deliver concisely using Markdown.`,
+    maxTokens: 1500,
   });
 
   return text;
