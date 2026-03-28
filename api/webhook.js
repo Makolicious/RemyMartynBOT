@@ -9,7 +9,7 @@ let FALLBACK_MODEL = null;
 let MEMORY_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic('claude-sonnet-4-6-20250514');
+  FALLBACK_MODEL = anthropic('claude-sonnet-4-6');
   MEMORY_MODEL = anthropic('claude-haiku-4-5-20251001');  // Fast + cheap for extraction
 }
 const TelegramBot = require('node-telegram-bot-api');
