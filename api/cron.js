@@ -37,15 +37,50 @@ async function cronWebSearch(query) {
     const res = await fetch('https://google.serper.dev/search', {
       method: 'POST',
       headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, num: 5 }),
+      body: JSON.stringify({ q: query, num: 10, tbs: 'qdr:d' }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const results = (data.organic || []).slice(0, 5).map(r => `${r.title}: ${r.snippet}`).join('\n');
-    return results || null;
+    const parts = [];
+    // Include top stories if available
+    if (data.topStories) {
+      parts.push(...data.topStories.slice(0, 5).map(r => `[TOP] ${r.title}${r.source ? ` (${r.source})` : ''}`));
+    }
+    // Include news results if available
+    if (data.news) {
+      parts.push(...data.news.slice(0, 5).map(r => `[NEWS] ${r.title}: ${r.snippet || ''}${r.source ? ` (${r.source})` : ''}`));
+    }
+    // Include organic results
+    if (data.organic) {
+      parts.push(...data.organic.slice(0, 8).map(r => `${r.title}: ${r.snippet}`));
+    }
+    return parts.join('\n') || null;
   } catch (err) {
     console.error('[CRON] Web search failed:', err.message);
+    return null;
+  }
+}
+
+// News-specific search via Serper news endpoint
+async function cronNewsSearch(query) {
+  const serperKey = process.env.SERPER_API_KEY;
+  if (!serperKey) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/news', {
+      method: 'POST',
+      headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 10 }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = (data.news || []).slice(0, 10).map(r =>
+      `${r.title}${r.snippet ? ': ' + r.snippet : ''} (${r.source || 'unknown'})`
+    ).join('\n');
+    return results || null;
+  } catch (err) {
+    console.error('[CRON] News search failed:', err.message);
     return null;
   }
 }
@@ -65,16 +100,18 @@ async function executeAiTask(job) {
   const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary)\b/i.test(job.message);
   let searchSection = '';
   if (needsSearch) {
-    const queries = [
-      'top news today ' + new Date().toISOString().slice(0, 10),
-      'breaking news headlines today',
-      'technology business world news today',
-    ];
-    const results = await Promise.all(queries.map(q => cronWebSearch(q)));
-    const combined = results.filter(Boolean).join('\n\n');
+    const results = await Promise.all([
+      cronNewsSearch('top breaking news today'),
+      cronNewsSearch('US politics economy news today'),
+      cronNewsSearch('technology AI business news today'),
+      cronNewsSearch('world international news today'),
+      cronWebSearch('most important news today ' + new Date().toISOString().slice(0, 10)),
+    ]);
+    const combined = results.filter(Boolean).join('\n---\n');
     if (combined) {
-      searchSection = `\n\nLIVE SEARCH RESULTS (fetched just now — use ONLY this data, do NOT make up news):\n${combined}\n`;
+      searchSection = `\n\nLIVE NEWS DATA (fetched just now — synthesize ALL of this into the debrief, do NOT skip or ignore any results, do NOT fabricate stories not found here):\n${combined}\n`;
     }
+    console.log(`[CRON] Search returned ${combined.split('\n').length} lines of data`);
   }
 
   // Use Sonnet if available (better at synthesis), fall back to GLM
@@ -86,7 +123,7 @@ async function executeAiTask(job) {
     model: taskModel,
     system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}.${searchSection}`,
     prompt: `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`,
-    maxTokens: 1500,
+    maxTokens: 2500,
   });
 
   return text;
