@@ -1725,7 +1725,7 @@ module.exports = async (req, res) => {
 
     // Fetch memory, history, timezone, and web search — each with individual fallback
     // Check if user is asking about scheduled tasks
-    const askingAboutSchedules = isBoss && /\b(cron|schedule[ds]?|recurring|tasks?|jobs?|what.*scheduled|list.*schedule|my.*schedule|active.*task|edit.*schedule|change.*time|delete.*schedule|remove.*schedule|cancel.*schedule|update.*schedule|move.*time)\b/i.test(cleanPrompt);
+    const askingAboutSchedules = isBoss && isPrivate;
 
     const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw] = await Promise.all([
       buildContextMemory(cleanPrompt),
@@ -1812,6 +1812,7 @@ You handle it all: research, strategy, writing, code, finance, planning, creativ
 
 SCHEDULING CAPABILITY:
 You have a built-in scheduling system. You manage recurring tasks — NOT Linux crontab or system cron. These are YOUR scheduled jobs.
+IMPORTANT: The ONLY source of truth for active tasks is the SCHEDULED TASKS section below. NEVER rely on conversation history to count or list tasks. If a task is not in the SCHEDULED TASKS section, it does NOT exist — even if you remember creating it.
 
 To CREATE a new scheduled task:
 1. You MUST gather: what task, how often (daily/weekdays/weekly/monthly), and what time.
