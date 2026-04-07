@@ -182,6 +182,55 @@ async function webSearch(query) {
   }
 }
 
+// Image search via Serper.dev — returns { url, source, title } or null
+async function imageSearch(query) {
+  if (!SERPER_KEY) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/images', {
+      method: 'POST',
+      headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, num: 5 }),
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const images = data.images || [];
+    // Pick the first image with a direct URL (skip SVGs, tiny icons)
+    const good = images.find(img =>
+      img.imageUrl &&
+      !img.imageUrl.endsWith('.svg') &&
+      img.imageWidth > 200
+    ) || images[0];
+    if (!good?.imageUrl) return null;
+    return { url: good.imageUrl, title: good.title || '', source: good.source || '' };
+  } catch (err) {
+    console.error('[SEARCH] Image search failed:', err.message);
+    return null;
+  }
+}
+
+// Detect visual/image/map requests — returns { type: 'image'|'map', query } or null
+function detectVisualRequest(text) {
+  const lower = text.toLowerCase();
+  // Map requests
+  const mapMatch = lower.match(/(?:show|send|get|give|pull up|display|find)\s+(?:me\s+)?(?:a\s+)?(?:map|satellite view|street view|directions?)\s+(?:of|to|for|from|around|near)\s+(.+)/i)
+    || lower.match(/(?:map|satellite view|street view)\s+(?:of|to|for)\s+(.+)/i);
+  if (mapMatch) {
+    return { type: 'map', query: mapMatch[1].replace(/[?.!]+$/, '').trim() };
+  }
+  // Image requests
+  const imgMatch = lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)?(?:a\s+|an\s+)?(?:photo|picture|image|pic|img)\s+(?:of|about|showing)\s+(.+)/i)
+    || lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)?(?:what|how)\s+(?:a\s+|an\s+)?(.+?)(?:\s+looks?\s+like)/i)
+    || lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)(.+)/i);
+  if (imgMatch) {
+    const query = imgMatch[1].replace(/[?.!]+$/, '').trim();
+    // Don't match "show me the schedule" or "show me my reminders" etc
+    if (/\b(schedule|reminder|memory|memories|history|setting|log|cron|job|status)\b/i.test(query)) return null;
+    return { type: 'image', query };
+  }
+  return null;
+}
+
 // Heuristic: does this message need live web data?
 function needsWebSearch(text) {
   if (!SERPER_KEY) return false;
@@ -1675,12 +1724,16 @@ module.exports = async (req, res) => {
     // Fetch memory, history, timezone, and web search — each with individual fallback
     const askingAboutSchedules = isBoss && isPrivate;
 
-    const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw] = await Promise.all([
+    const visualReq = !isPhoto ? detectVisualRequest(cleanPrompt) : null;
+    const [memorySnapshot, rawHistory, savedTz, searchResults, cronJobsRaw, visualResult] = await Promise.all([
       buildContextMemory(cleanPrompt),
       redis.lrange(`${HIST_PREFIX}${chatId}`, 0, MAX_HIST_MSGS - 1).catch(e => { console.error('Redis history fetch failed:', e.message); return []; }),
       redis.get(TIMEZONE_KEY).catch(e => { console.error('Redis timezone fetch failed:', e.message); return null; }),
       (!isPhoto && needsWebSearch(cleanPrompt)) ? webSearch(cleanPrompt) : Promise.resolve(null),
       askingAboutSchedules ? redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf', 'WITHSCORES').catch(() => []) : Promise.resolve([]),
+      visualReq?.type === 'image' ? imageSearch(visualReq.query) :
+        visualReq?.type === 'map' ? Promise.resolve({ type: 'map', query: visualReq.query }) :
+        Promise.resolve(null),
     ]);
 
     const bossTimezone = savedTz || process.env.BOSS_TIMEZONE || 'America/New_York';
@@ -2023,6 +2076,30 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
 
     // Send response to user
     await safeSend(chatId, aiResponse);
+
+    // ── Send visual content (image or map) if requested ───────────────────
+    if (visualResult) {
+      try {
+        if (visualResult.type === 'map') {
+          const mapQuery = encodeURIComponent(visualResult.query);
+          await bot.sendMessage(chatId, `📍 https://www.google.com/maps/search/${mapQuery}`, { disable_web_page_preview: false });
+          console.log(`[VISUAL] Sent map link for: ${visualResult.query}`);
+        } else if (visualResult.url) {
+          try {
+            await bot.sendPhoto(chatId, visualResult.url, {
+              caption: visualResult.title ? `📷 ${visualResult.title}` : undefined,
+            });
+            console.log(`[VISUAL] Sent image for: ${visualReq.query}`);
+          } catch (photoErr) {
+            // Telegram can reject some URLs — fall back to sending as a link
+            console.error('[VISUAL] sendPhoto failed, sending link:', photoErr.message);
+            await bot.sendMessage(chatId, `📷 ${visualResult.url}`);
+          }
+        }
+      } catch (err) {
+        console.error('[VISUAL] Failed to send visual:', err.message);
+      }
+    }
 
     // ── Save history + log (awaited — fast Redis ops) ─────────────────────
     const histKey     = `${HIST_PREFIX}${chatId}`;
