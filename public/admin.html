@@ -612,7 +612,7 @@
                 ${confidenceBar}
                 <div class="flex justify-between items-center mt-3 text-xs text-gray-400">
                   <span>Created: ${new Date(m.created_at).toLocaleDateString()}</span>
-                  <button onclick="deleteMemory('${m.id}')" class="text-red-400 hover:text-red-300 transition">Delete</button>
+                  <button onclick="deleteMemory('${escapeAttr(m.id)}')" class="text-red-400 hover:text-red-300 transition">Delete</button>
                 </div>
               </div>
             `;

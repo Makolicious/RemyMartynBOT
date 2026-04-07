@@ -8,7 +8,9 @@ const CHAT_MODEL = zai('glm-4-plus');
 let FALLBACK_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic('claude-3-haiku-20240307');
+  const cronModel = process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6';
+  FALLBACK_MODEL = anthropic(cronModel);
+  console.log(`[CRON INIT] Anthropic model: ${cronModel}`);
 }
 
 const redis = new Redis(process.env.REDIS_URL, {
@@ -85,6 +87,78 @@ async function cronNewsSearch(query) {
   }
 }
 
+// Build targeted search queries based on the job message content
+function buildSearchQueries(jobMessage, isLocal) {
+  const today = new Date().toISOString().slice(0, 10);
+  const msg = jobMessage.toLowerCase();
+
+  // Topic map: keywords → specific search query
+  const topicMap = [
+    { test: /solar|\bpv\b|photovoltaic|solar panel|solar energy|solar power/,
+      query: `solar energy PV photovoltaic panels industry news ${today}` },
+    { test: /crypto|bitcoin|\bbtc\b|ethereum|\beth\b|blockchain|defi|nft|altcoin/,
+      query: `cryptocurrency bitcoin crypto market news ${today}` },
+    { test: /\bai\b|artificial intelligence|machine learning|\bllm\b|openai|deepmind|gemini|chatgpt/,
+      query: `artificial intelligence AI models news ${today}` },
+    { test: /stock|nasdaq|s&p|dow jones|wall street|earnings|equities/,
+      query: `stock market Wall Street equities news ${today}` },
+    { test: /economy|economic|inflation|fed |federal reserve|interest rate|gdp|recession/,
+      query: `US economy inflation Federal Reserve news ${today}` },
+    { test: /tech|technology|silicon valley|startup|big tech|apple|google|microsoft|meta|amazon/,
+      query: `technology big tech startups news ${today}` },
+    { test: /politic|congress|senate|white house|election|trump|biden|democrat|republican|legislation/,
+      query: `US politics government White House news ${today}` },
+    { test: /world|international|global|geopolit|ukraine|russia|china|europe|middle east|war/,
+      query: `world international geopolitics news ${today}` },
+    { test: /sports|nfl|nba|mlb|mls|soccer|football|basketball|baseball|f1|ufc/,
+      query: `sports news scores highlights ${today}` },
+    { test: /health|medical|pharma|fda|disease|drug|vaccine|hospital/,
+      query: `health medical pharmaceutical news ${today}` },
+    { test: /real estate|housing|mortgage|property|home price/,
+      query: `real estate housing market mortgage rates ${today}` },
+    { test: /energy|oil|gas|petroleum|opec|crude|renewable|wind power/,
+      query: `energy sector oil gas renewable power news ${today}` },
+    { test: /climate|environment|carbon|green|sustainability|weather/,
+      query: `climate environment sustainability news ${today}` },
+    { test: /miami|florida|south florida|hialeah|broward|dade|local/,
+      query: `Miami South Florida Hialeah local news ${today}` },
+    { test: /business|entrepreneur|startup|venture|vc|funding/,
+      query: `business entrepreneurship startups funding news ${today}` },
+  ];
+
+  const matched = [];
+  for (const { test, query } of topicMap) {
+    if (test.test(msg)) matched.push(query);
+  }
+
+  // Always start with top breaking news + a web sweep, both date-stamped
+  const queries = [
+    { fn: cronNewsSearch, q: `top breaking news today ${today}` },
+    { fn: cronWebSearch,  q: `most important news stories today ${today}` },
+  ];
+
+  // Add all matched topic queries (up to 5)
+  for (const q of matched.slice(0, 5)) {
+    queries.push({ fn: cronNewsSearch, q });
+  }
+
+  // If no topics matched, fall back to broad categories
+  if (matched.length === 0) {
+    queries.push(
+      { fn: cronNewsSearch, q: `US politics economy news today ${today}` },
+      { fn: cronNewsSearch, q: `technology AI business news today ${today}` },
+      { fn: cronNewsSearch, q: `world international news today ${today}` },
+    );
+  }
+
+  // Always add local if requested and not already included
+  if (isLocal && !matched.some(q => /miami|florida/i.test(q))) {
+    queries.push({ fn: cronNewsSearch, q: `Miami South Florida Hialeah news today ${today}` });
+  }
+
+  return queries;
+}
+
 // Execute an AI task job — Sonnet for quality, Serper for live data
 async function executeAiTask(job) {
   const bossName = process.env.BOSS_NAME || 'Mako';
@@ -96,19 +170,14 @@ async function executeAiTask(job) {
     hour: '2-digit', minute: '2-digit',
   });
 
-  // Run multiple searches for better coverage on news tasks
+  // Run targeted searches based on what the job actually asks for
   const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary)\b/i.test(job.message);
   let searchSection = '';
   if (needsSearch) {
     const isLocal = /\blocal\b/i.test(job.message);
-    const results = await Promise.all([
-      cronNewsSearch('top breaking news today'),
-      cronNewsSearch('US politics economy news today'),
-      cronNewsSearch('technology AI business news today'),
-      cronNewsSearch('world international news today'),
-      cronWebSearch('most important news today ' + new Date().toISOString().slice(0, 10)),
-      isLocal ? cronNewsSearch('Miami South Florida Hialeah news today') : Promise.resolve(null),
-    ]);
+    const searchQueries = buildSearchQueries(job.message, isLocal);
+    console.log(`[CRON] Running ${searchQueries.length} targeted searches for job: "${job.message.slice(0, 60)}"`);
+    const results = await Promise.all(searchQueries.map(({ fn, q }) => fn(q)));
     const combined = results.filter(Boolean).join('\n---\n');
     if (combined) {
       searchSection = `\n\nLIVE NEWS DATA (fetched just now — synthesize ALL of this into the debrief, do NOT skip or ignore any results, do NOT fabricate stories not found here):\n${combined}\n`;
@@ -267,10 +336,18 @@ module.exports = async (req, res) => {
         await redis.hset(`${CRON_PREFIX}${jobId}`, 'failCount', String(failCount));
         if (failCount >= 5) {
           await redis.hset(`${CRON_PREFIX}${jobId}`, 'enabled', 'false');
-          console.error(`[CRON] Job ${jobId} disabled after ${failCount} consecutive failures`);
+          // Remove from scheduled set so it stops getting picked up
+          await redis.zrem(CRON_JOBS_KEY, jobId);
+          console.error(`[CRON] Job ${jobId} disabled + unscheduled after ${failCount} consecutive failures`);
+          // Notify boss
+          const chatId = parseInt(job.chatId) || parseInt(process.env.BOSS_ID) || parseInt(process.env.MY_TELEGRAM_ID);
+          if (chatId) {
+            await bot.sendMessage(chatId, `⚠️ Cron job "${(job.message || jobId).slice(0, 50)}" disabled after ${failCount} consecutive failures. Re-enable from admin or /cron.`).catch(() => {});
+          }
+        } else {
+          // Reschedule to avoid getting stuck — push 1 hour forward
+          await redis.zadd(CRON_JOBS_KEY, now + 3600000, jobId);
         }
-        // Reschedule to avoid getting stuck — push 1 hour forward
-        await redis.zadd(CRON_JOBS_KEY, now + 3600000, jobId);
       }
     }
 

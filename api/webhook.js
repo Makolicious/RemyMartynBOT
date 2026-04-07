@@ -4,13 +4,16 @@ const { generateText } = require('ai');
 const CHAT_MODEL    = zai('glm-4-plus');  // Proven fast chat model
 const UTILITY_MODEL = zai('glm-5');    // memory rebuild, summarize, reasoning
 
-// Anthropic models — Sonnet for fallback chat + memory extraction
+// Anthropic models — configurable via env vars, smart defaults
 let FALLBACK_MODEL = null;
 let MEMORY_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic('claude-3-haiku-20240307');
-  MEMORY_MODEL = anthropic('claude-3-haiku-20240307');  // Fast + cheap for extraction
+  const chatModel = process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6';
+  const fastModel = process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5';
+  FALLBACK_MODEL = anthropic(chatModel);
+  MEMORY_MODEL = anthropic(fastModel);
+  console.log(`[INIT] Anthropic models — chat: ${chatModel}, memory: ${fastModel}`);
 }
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
@@ -1544,7 +1547,7 @@ module.exports = async (req, res) => {
     if (message.voice) {
       const groqKey = process.env.GROQ_API_KEY;
       if (!groqKey) {
-        await bot.sendMessage(chatId, "Voice message received — can't listen in just yet. Type it out for me.");
+        await bot.sendMessage(chatId, "Voice isn't configured yet — GROQ_API_KEY is missing. Type it out for now, Boss.");
         return res.status(200).send('OK');
       }
       try {
@@ -1879,14 +1882,14 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
       currentMessage = { role: 'user', content: taggedPrompt };
     }
 
-    // ── Model routing — Haiku for heavy tasks, GLM-4-Plus for chat ────
+    // ── Model routing — Anthropic for heavy tasks, GLM-4-Plus for chat ────
     const SONNET_TRIGGERS = /\b(write|draft|essay|article|story|poem|script|report|proposal|plan|strategy|roadmap|analyze|analyse|analysis|breakdown|compare|contrast|research|explain|summarize|summarise|translate|code|function|algorithm|debug|refactor|build|create|design|list.*steps|step.by.step|pros.and.cons|in.depth|detailed|thorough|comprehensive|long.form)\b/i;
     const hasWebSearch = !!searchResults;
     const useSonnet = FALLBACK_MODEL && (hasWebSearch || (SONNET_TRIGGERS.test(cleanPrompt) && cleanPrompt.length > 40));
     const primaryModel = useSonnet ? FALLBACK_MODEL : CHAT_MODEL;
-    const primaryName  = useSonnet ? 'Haiku' : 'GLM-4-Plus';
+    const primaryName  = useSonnet ? 'Anthropic' : 'GLM-4-Plus';
     const secondaryModel = useSonnet ? CHAT_MODEL : FALLBACK_MODEL;
-    const secondaryName  = useSonnet ? 'GLM-4-Plus' : 'Haiku';
+    const secondaryName  = useSonnet ? 'GLM-4-Plus' : 'Anthropic';
 
     console.log(`[AI] Routing → ${primaryName} | prompt: ${cleanPrompt.length} chars | history: ${history.length}`);
     const aiStartTime = Date.now();
