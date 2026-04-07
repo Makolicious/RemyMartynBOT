@@ -218,14 +218,15 @@ function detectVisualRequest(text) {
   if (mapMatch) {
     return { type: 'map', query: mapMatch[1].replace(/[?.!]+$/, '').trim() };
   }
-  // Image requests
+  // Image requests — "show me X", "let me see X", "lets see X", "picture of X", etc.
   const imgMatch = lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)?(?:a\s+|an\s+)?(?:photo|picture|image|pic|img)\s+(?:of|about|showing)\s+(.+)/i)
     || lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)?(?:what|how)\s+(?:a\s+|an\s+)?(.+?)(?:\s+looks?\s+like)/i)
+    || lower.match(/(?:let(?:'?s| me| us)\s+see|i (?:want|wanna) (?:to )?see)\s+(?:the\s+|a\s+|an\s+)?(.+)/i)
     || lower.match(/(?:show|send|get|give|find|pull up|display)\s+(?:me\s+)(.+)/i);
   if (imgMatch) {
     const query = imgMatch[1].replace(/[?.!]+$/, '').trim();
-    // Don't match "show me the schedule" or "show me my reminders" etc
-    if (/\b(schedule|reminder|memory|memories|history|setting|log|cron|job|status)\b/i.test(query)) return null;
+    // Don't match non-visual requests
+    if (/\b(schedule|reminder|memory|memories|history|setting|log|cron|job|status|what you|how you)\b/i.test(query)) return null;
     return { type: 'image', query };
   }
   return null;
@@ -1845,6 +1846,9 @@ CRITICAL: NEVER say you edited or deleted a task without including the tag. The 
 --- MEMORY ---
 ${contextMemory || 'No memory recorded yet.'}
 --- END MEMORY ---
+
+VISUAL CAPABILITY:
+You CAN send images and maps. When ${BOSS_NAME} asks to see something visual (a photo, picture, image, map, or what something looks like), respond naturally with a brief comment — the image or map will be delivered automatically right after your message. Do NOT say you can't show images. Do NOT apologize or explain limitations. Just respond as if you're pulling it up.
 
 Never make ${BOSS_NAME} repeat himself. Reference timestamps naturally when relevant.
 Use Markdown where it sharpens things: **bold** for key points, bullets for intel, \`code\` for technical ops.
