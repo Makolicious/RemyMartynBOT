@@ -182,14 +182,21 @@ async function webSearch(query) {
   }
 }
 
+// Safety filter — block harmful/explicit visual queries
+const BLOCKED_VISUAL_PATTERNS = /\b(gore|gory|murder|kill|dead bod|corpse|mutilat|dismember|beheading|execution|torture|self.?harm|suicide|cut(?:ting)?\s+(?:my|your|their)|nude|naked|nsfw|porn|hentai|sex(?:ual)?|erotic|xxx|child|minor|underage|bomb.?making|how\s+to\s+(?:make|build)\s+(?:a\s+)?(?:bomb|weapon|explosive)|drug\s+(?:cook|mak|synthe)|terrorist|extremis|white\s+suprem|nazi|swastika)\b/i;
+
 // Image search via Serper.dev — returns { url, source, title } or null
 async function imageSearch(query) {
   if (!SERPER_KEY) return null;
+  if (BLOCKED_VISUAL_PATTERNS.test(query)) {
+    console.log(`[VISUAL] Blocked unsafe query: "${query.slice(0, 50)}"`);
+    return null;
+  }
   try {
     const res = await fetch('https://google.serper.dev/images', {
       method: 'POST',
       headers: { 'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, num: 5 }),
+      body: JSON.stringify({ q: query, num: 5, safe: 'active' }),
       signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
