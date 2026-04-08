@@ -536,22 +536,23 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Cron job not found' }, 404);
       }
 
-      // Set score to the past so cron picks it up immediately
+      // Set score to the past so next cron tick picks it up (runs every 60s)
       await db.zadd(CRON_JOBS_KEY, Date.now() - 1000, jobId);
 
-      // Trigger the cron endpoint directly
+      // Also try to trigger cron immediately — but don't block on it
+      // Vercel freezes after response, so we await the fetch before returning
       const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
         ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
         : 'https://remy-martyn-bot.vercel.app';
 
       try {
-        const cronRes = await fetch(`${baseUrl}/api/cron`, { signal: AbortSignal.timeout(25000) });
-        const cronText = await cronRes.text();
-        return jsonResponse(res, { success: true, message: cronText });
-      } catch (err) {
-        // Cron timed out or failed — job is still marked overdue so next tick will fire it
-        return jsonResponse(res, { success: true, message: 'Job marked overdue — will fire on next cron tick (within 60s)' });
+        // Short timeout — just kick it off, don't wait for full execution
+        await fetch(`${baseUrl}/api/cron`, { signal: AbortSignal.timeout(5000) });
+      } catch {
+        // Expected — cron takes longer than 5s, but it's already running
       }
+
+      return jsonResponse(res, { success: true, message: 'Job fired — check Telegram for output' });
     }
 
     // ── DELETE /cron-jobs/:id — delete recurring job ────────────────────
