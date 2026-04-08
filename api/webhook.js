@@ -381,8 +381,14 @@ function calcVoltageDrop(wireSize, lengthFt, amps, voltage) {
   return { vDrop: vDrop.toFixed(2), pctDrop: pctDrop.toFixed(2), pass: pctDrop <= 3 };
 }
 
+// Sorted smallest-to-largest by ampacity for correct lookup
+const WIRE_AMPACITY_SORTED = [
+  ['14', 20], ['12', 25], ['10', 35], ['8', 50], ['6', 65], ['4', 85],
+  ['3', 100], ['2', 115], ['1', 130], ['1/0', 150], ['2/0', 175], ['3/0', 200], ['4/0', 230],
+];
+
 function calcWireSize(amps) {
-  for (const [size, ampacity] of Object.entries(WIRE_AMPACITY)) {
+  for (const [size, ampacity] of WIRE_AMPACITY_SORTED) {
     if (ampacity >= amps) return { size, ampacity };
   }
   return null;
