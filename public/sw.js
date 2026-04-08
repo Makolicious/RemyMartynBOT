@@ -1,4 +1,4 @@
-const CACHE_NAME = 'remy-admin-v1';
+const CACHE_NAME = 'remy-admin-v2';
 const ADMIN_ASSETS = [
   '/',
   '/admin.html',
