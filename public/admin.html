@@ -1079,7 +1079,7 @@
             <h3 class="text-lg font-bold mb-2">Active Groups (${data.totalGroups})</h3>
             <p class="text-gray-400 mb-2">Groups where Boss is present:</p>
             <div class="flex flex-wrap gap-2">
-              ${data.activeGroups.map(g => `<span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-sm">${escapeHtml(String(g))}</span>`).join('')}
+              ${data.activeGroups.map(g => `<span class="bg-green-500/20 text-green-300 px-3 py-1 rounded-full text-sm inline-flex items-center gap-1">${escapeHtml(String(g))}<button onclick="removeGroup('${escapeAttr(String(g))}')" class="ml-1 text-red-400 hover:text-red-300 font-bold">&times;</button></span>`).join('')}
             </div>
           </div>
         `;
@@ -1119,6 +1119,19 @@
       });
       if (data?.success) {
         document.getElementById('userIdInput').value = '';
+        loadUsers();
+        showToast(data.message);
+      }
+    }
+
+    async function removeGroup(groupId) {
+      if (!confirm(`Remove group ${groupId}?`)) return;
+
+      const data = await apiCall('/users', {
+        method: 'POST',
+        body: JSON.stringify({ userId: groupId, action: 'remove_group' })
+      });
+      if (data?.success) {
         loadUsers();
         showToast(data.message);
       }

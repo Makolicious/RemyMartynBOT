@@ -324,7 +324,12 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { success: true, message: `User ${userId} removed` });
       }
 
-      return jsonResponse(res, { error: 'Invalid action (use "add" or "remove")' }, 400);
+      if (action === 'remove_group') {
+        await db.del(`${BOSS_GRP_PREFIX}${userId}`);
+        return jsonResponse(res, { success: true, message: `Group ${userId} removed` });
+      }
+
+      return jsonResponse(res, { error: 'Invalid action (use "add", "remove", or "remove_group")' }, 400);
     }
 
     // ── GET /memories — list all memories with optional filters ───────
