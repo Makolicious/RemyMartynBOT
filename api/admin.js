@@ -536,7 +536,8 @@ module.exports = async (req, res) => {
         return jsonResponse(res, { error: 'Cron job not found' }, 404);
       }
 
-      // Set score to the past so next cron tick picks it up (runs every 60s)
+      // Re-enable if disabled (circuit breaker may have turned it off) + set score to past
+      await db.hset(`${CRON_PREFIX}${jobId}`, 'enabled', 'true', 'failCount', '0');
       await db.zadd(CRON_JOBS_KEY, Date.now() - 1000, jobId);
 
       // Also try to trigger cron immediately — but don't block on it

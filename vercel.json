@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/webhook.js": { "maxDuration": 60 },
-    "api/cron.js":    { "maxDuration": 30 },
+    "api/cron.js":    { "maxDuration": 60 },
     "api/admin.js":   { "maxDuration": 30 }
   },
   "routes": [

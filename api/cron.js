@@ -40,7 +40,7 @@ async function cronWebSearch(query) {
       method: 'POST',
       headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ q: query, num: 10, tbs: 'qdr:d' }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -73,7 +73,7 @@ async function cronNewsSearch(query) {
       method: 'POST',
       headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ q: query, num: 10 }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
     const data = await res.json();
