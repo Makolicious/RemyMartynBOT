@@ -137,8 +137,8 @@ function buildSearchQueries(jobMessage, isLocal) {
     { fn: cronWebSearch,  q: `most important news stories today ${today}` },
   ];
 
-  // Add all matched topic queries (up to 5)
-  for (const q of matched.slice(0, 5)) {
+  // Add matched topic queries (cap at 3 to stay within Vercel timeout)
+  for (const q of matched.slice(0, 3)) {
     queries.push({ fn: cronNewsSearch, q });
   }
 
@@ -250,39 +250,18 @@ async function executeAiTask(job) {
       ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`
       : `Execute this scheduled task for ${bossName}: ${job.message}\n\nKeep it short and direct. No filler.`;
 
-  // Try primary model, fall back to secondary
-  const primaryModel = FALLBACK_MODEL || CHAT_MODEL;
-  const secondaryModel = FALLBACK_MODEL ? CHAT_MODEL : null;
-  const primaryName = FALLBACK_MODEL ? 'Anthropic' : 'GLM';
-
-  console.log(`[CRON] AI task using ${primaryName} | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
+  // Use GLM for cron tasks — faster, avoids Anthropic timeouts on serverless
+  // Anthropic Sonnet is too slow for the tight Vercel function window
+  console.log(`[CRON] AI task using GLM | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
 
   let text;
-  try {
-    const result = await generateText({
-      model: primaryModel,
-      system: systemMsg,
-      prompt: promptMsg,
-      maxTokens: 2500,
-    });
-    text = result.text;
-    console.log(`[CRON] ${primaryName} success`);
-  } catch (primaryErr) {
-    console.error(`[CRON] ${primaryName} FAILED:`, primaryErr.message);
-    if (secondaryModel) {
-      console.log(`[CRON] Falling back to GLM...`);
-      const result = await generateText({
-        model: secondaryModel,
-        system: systemMsg,
-        prompt: promptMsg,
-        maxTokens: 2500,
-      });
-      text = result.text;
-      console.log(`[CRON] GLM fallback success`);
-    } else {
-      throw primaryErr;
-    }
-  }
+  const result = await generateText({
+    model: CHAT_MODEL,
+    system: systemMsg,
+    prompt: promptMsg,
+    maxTokens: 2000,
+  });
+  text = result.text;
 
   return text;
 }
