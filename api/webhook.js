@@ -256,16 +256,190 @@ function isTrivialMessage(text) {
   return /^(ok|okay|lol|lmao|haha|yeah|yep|yup|nah|nope|no|yes|sure|cool|nice|k|thanks|ty|thx|got it|understood|👍|😂|🙏|💯|👌|✅|hmm|hm|oh|ah|wow|damn|shit|fuck|bro|nigga|fam|bruh|lmfao|fr|word|bet|facts)\W*$/i.test(text.trim());
 }
 
-// Parse natural language reminder time
-// Accepts: "in 2h to call John", "in 30m check email", "in 1d to review contract"
-function parseReminderTime(text) {
-  const match = text.match(/^in\s+(\d+)\s*(m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?(.+)$/i);
-  if (!match) return null;
-  const amount = parseInt(match[1]);
-  const unit   = match[2][0].toLowerCase();
-  const msg    = match[3].trim();
-  const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
-  return { ts: Date.now() + amount * ms, message: msg };
+// Parse natural language reminder time — supports many formats:
+// "in 2h to call John", "tomorrow at 9am to check permits", "friday at 3pm pick up materials",
+// "at 3:30pm call inspector", "next monday at 8am review plans", "tonight at 9pm call family"
+function parseReminderTime(text, timezone) {
+  const tz = timezone || process.env.BOSS_TIMEZONE || 'America/New_York';
+  const now = new Date();
+  // Get current time in boss's timezone
+  const localNow = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+
+  // "in 2h to call John" — relative time
+  const relMatch = text.match(/^in\s+(\d+)\s*(m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (relMatch) {
+    const amount = parseInt(relMatch[1]);
+    const unit   = relMatch[2][0].toLowerCase();
+    const msg    = relMatch[3].trim();
+    const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
+    return { ts: Date.now() + amount * ms, message: msg };
+  }
+
+  // Helper: resolve a time string to a Date in boss's timezone
+  function resolveTime(timeStr, targetDate) {
+    const parsed = parseTimeStr(timeStr);
+    if (!parsed) return null;
+    const [h, m] = parsed.split(':').map(Number);
+    const d = new Date(targetDate);
+    d.setHours(h, m, 0, 0);
+    // Convert local target back to UTC
+    const utcStr = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const localStr = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+    const offsetMs = utcStr.getTime() - localStr.getTime();
+    return d.getTime() + offsetMs;
+  }
+
+  const dayNames = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+
+  // "tomorrow at 9am to check permits"
+  const tomorrowMatch = text.match(/^tomorrow\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (tomorrowMatch) {
+    const tomorrow = new Date(localNow);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const ts = resolveTime(tomorrowMatch[1].trim(), tomorrow);
+    if (ts) return { ts, message: tomorrowMatch[2].trim() };
+  }
+
+  // "tonight at 9pm call family" / "today at 3pm do X"
+  const todayMatch = text.match(/^(?:today|tonight)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (todayMatch) {
+    const ts = resolveTime(todayMatch[1].trim(), localNow);
+    if (ts) return { ts, message: todayMatch[2].trim() };
+  }
+
+  // "friday at 3pm pick up materials" / "next monday at 8am review plans"
+  const dayMatch = text.match(/^(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (dayMatch) {
+    const targetDay = dayNames[dayMatch[1].toLowerCase()];
+    if (targetDay !== undefined) {
+      const target = new Date(localNow);
+      const currentDay = localNow.getDay();
+      let daysAhead = targetDay - currentDay;
+      if (daysAhead <= 0) daysAhead += 7; // Always go forward
+      target.setDate(target.getDate() + daysAhead);
+      const ts = resolveTime(dayMatch[2].trim(), target);
+      if (ts) return { ts, message: dayMatch[3].trim() };
+    }
+  }
+
+  // "at 3:30pm call inspector" — today, or tomorrow if time already passed
+  const atMatch = text.match(/^at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (atMatch) {
+    let ts = resolveTime(atMatch[1].trim(), localNow);
+    if (ts && ts <= Date.now()) {
+      // Time already passed today — set for tomorrow
+      ts += 86400000;
+    }
+    if (ts) return { ts, message: atMatch[2].trim() };
+  }
+
+  return null;
+}
+
+// ── Electrical Quick Tools (NEC-based) ───────────────────────────────────────
+
+// NEC Chapter 9 Table 1 — conduit fill percentages
+// 1 wire: 53%, 2 wires: 31%, 3+ wires: 40%
+const CONDUIT_AREA = { // Internal area in sq inches
+  'emt': { '1/2': 0.304, '3/4': 0.533, '1': 0.864, '1-1/4': 1.496, '1-1/2': 2.036, '2': 3.356, '2-1/2': 5.858, '3': 8.846, '3-1/2': 11.545, '4': 14.753 },
+  'pvc': { '1/2': 0.285, '3/4': 0.508, '1': 0.832, '1-1/4': 1.453, '1-1/2': 1.986, '2': 3.291, '2-1/2': 5.453, '3': 8.091, '3-1/2': 10.574, '4': 13.631 },
+  'rigid': { '1/2': 0.314, '3/4': 0.549, '1': 0.887, '1-1/4': 1.526, '1-1/2': 2.071, '2': 3.408, '2-1/2': 5.858, '3': 8.846, '3-1/2': 11.545, '4': 14.753 },
+};
+const WIRE_AREA = { // Cross-section area in sq inches (THHN/THWN)
+  '14': 0.0097, '12': 0.0133, '10': 0.0211, '8': 0.0366, '6': 0.0507,
+  '4': 0.0824, '3': 0.0973, '2': 0.1158, '1': 0.1562, '1/0': 0.1855,
+  '2/0': 0.2223, '3/0': 0.2679, '4/0': 0.3237,
+};
+const WIRE_AMPACITY = { // NEC Table 310.16 — 75°C column (common for THHN)
+  '14': 20, '12': 25, '10': 35, '8': 50, '6': 65, '4': 85, '3': 100,
+  '2': 115, '1': 130, '1/0': 150, '2/0': 175, '3/0': 200, '4/0': 230,
+};
+const WIRE_RESISTANCE = { // Ohms per 1000ft — copper, DC (NEC Ch 9 Table 8)
+  '14': 3.14, '12': 1.98, '10': 1.24, '8': 0.778, '6': 0.491, '4': 0.308,
+  '3': 0.245, '2': 0.194, '1': 0.154, '1/0': 0.122, '2/0': 0.0967,
+  '3/0': 0.0766, '4/0': 0.0608,
+};
+
+function calcConduitFill(conduitSize, conduitType, wireSize, wireCount) {
+  const type = (conduitType || 'emt').toLowerCase();
+  const area = CONDUIT_AREA[type]?.[conduitSize];
+  const wireArea = WIRE_AREA[wireSize];
+  if (!area || !wireArea) return null;
+  const fillPct = wireCount === 1 ? 0.53 : wireCount === 2 ? 0.31 : 0.40;
+  const maxArea = area * fillPct;
+  const totalWireArea = wireArea * wireCount;
+  const pctUsed = (totalWireArea / maxArea) * 100;
+  const maxWires = Math.floor(maxArea / wireArea);
+  return { pctUsed: pctUsed.toFixed(1), maxWires, pass: totalWireArea <= maxArea, conduitArea: area, fillPct: (fillPct * 100) };
+}
+
+function calcVoltageDrop(wireSize, lengthFt, amps, voltage) {
+  const resistance = WIRE_RESISTANCE[wireSize];
+  if (!resistance) return null;
+  const vDrop = (2 * lengthFt * resistance * amps) / 1000; // 2 for round trip
+  const pctDrop = (vDrop / voltage) * 100;
+  return { vDrop: vDrop.toFixed(2), pctDrop: pctDrop.toFixed(2), pass: pctDrop <= 3 };
+}
+
+function calcWireSize(amps) {
+  for (const [size, ampacity] of Object.entries(WIRE_AMPACITY)) {
+    if (ampacity >= amps) return { size, ampacity };
+  }
+  return null;
+}
+
+// Detect and handle electrical calculation requests
+function detectElectricalCalc(text) {
+  const lower = text.toLowerCase();
+  // Conduit fill: "conduit fill 1 inch EMT with 10 #12 THHN"
+  const fillMatch = lower.match(/(?:conduit\s+fill|fill\s+(?:calc|for))\s+(\d[\d\/\-]*)\s*(?:inch|in|")?\s*(emt|pvc|rigid)?\s*(?:with|for)?\s*(\d+)\s*(?:#|awg|gauge)?\s*(\d+(?:\/\d+)?)/i);
+  if (fillMatch) {
+    const size = fillMatch[1].replace('-', '-');
+    const type = fillMatch[2] || 'emt';
+    const count = parseInt(fillMatch[3]);
+    const wire = fillMatch[4];
+    return { type: 'conduit_fill', size, conduitType: type, wireSize: wire, count };
+  }
+  // Voltage drop: "voltage drop 200ft 10AWG 40A 240V"
+  const vdMatch = lower.match(/(?:voltage\s+drop|vdrop|v\.?d\.?)\s+(\d+)\s*(?:ft|feet|foot)?\s*(?:#|awg)?\s*(\d+(?:\/\d+)?)\s*(?:awg)?\s*(\d+)\s*(?:a(?:mp)?s?)?\s*(\d+)\s*v(?:olts?)?/i)
+    || lower.match(/(?:voltage\s+drop|vdrop|v\.?d\.?)\s+(\d+)\s*(?:ft|feet)?\s+(\d+(?:\/\d+)?)\s*(?:awg|#)?\s+(\d+)\s*a\s+(\d+)\s*v/i);
+  if (vdMatch) {
+    return { type: 'voltage_drop', length: parseInt(vdMatch[1]), wireSize: vdMatch[2], amps: parseInt(vdMatch[3]), voltage: parseInt(vdMatch[4]) };
+  }
+  // Wire sizing: "what wire for 60 amps" / "wire size for 100A"
+  const wireMatch = lower.match(/(?:what\s+(?:wire|size|gauge)|wire\s+(?:size|gauge|for)|size\s+wire)\s+(?:for|do i need for)?\s*(\d+)\s*(?:a(?:mp)?s?)/i);
+  if (wireMatch) {
+    return { type: 'wire_size', amps: parseInt(wireMatch[1]) };
+  }
+  return null;
+}
+
+function formatElectricalResult(calc) {
+  if (calc.type === 'conduit_fill') {
+    const r = calcConduitFill(calc.size, calc.conduitType, calc.wireSize, calc.count);
+    if (!r) return null;
+    return `🔧 *Conduit Fill — ${calc.size}" ${calc.conduitType.toUpperCase()}*\n\n` +
+      `• ${calc.count}x #${calc.wireSize} THHN\n` +
+      `• Fill: *${r.pctUsed}%* ${r.pass ? '✅' : '❌ OVER FILL'}\n` +
+      `• Max allowed: ${r.maxWires} wires (NEC ${r.fillPct}% rule)\n` +
+      `• Conduit area: ${r.conduitArea} sq in`;
+  }
+  if (calc.type === 'voltage_drop') {
+    const r = calcVoltageDrop(calc.wireSize, calc.length, calc.amps, calc.voltage);
+    if (!r) return null;
+    return `⚡ *Voltage Drop — #${calc.wireSize} AWG, ${calc.length}ft*\n\n` +
+      `• Load: ${calc.amps}A @ ${calc.voltage}V\n` +
+      `• Drop: *${r.vDrop}V (${r.pctDrop}%)* ${r.pass ? '✅ Under 3%' : '❌ Over 3% — upsize wire'}\n` +
+      `• NEC recommends ≤3% for branch circuits`;
+  }
+  if (calc.type === 'wire_size') {
+    const r = calcWireSize(calc.amps);
+    if (!r) return `⚡ ${calc.amps}A exceeds standard wire tables — need parallel runs or busbar.`;
+    return `⚡ *Wire Size for ${calc.amps}A*\n\n` +
+      `• Minimum: *#${r.size} AWG* (rated ${r.ampacity}A @ 75°C)\n` +
+      `• Per NEC Table 310.16 — copper THHN/THWN`;
+  }
+  return null;
 }
 
 // Convert a local time string (HH:MM) in a given timezone to UTC (HH:MM)
@@ -1110,6 +1284,28 @@ module.exports = async (req, res) => {
 
       // ── Self-Organizing Memory Commands ────────────────────────────────────
 
+      // /pin <content> — save permanent memory, auto-categorized
+      if (text.startsWith('/pin ')) {
+        const pinContent = text.slice(5).trim();
+        if (!pinContent || pinContent.length < 5) {
+          await bot.sendMessage(chatId, '⚠️ Usage: `/pin Smith job address is 4521 NW 7th St`', { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+        const lower = pinContent.toLowerCase();
+        let category = 'personal_preferences';
+        if (/\b(job|project|site|contract|client|permit|inspection|wire|panel|conduit)\b/i.test(lower)) category = 'work_projects';
+        else if (/\b(address|phone|email|number|contact)\b/i.test(lower)) category = 'contacts';
+        else if (/\b(kid|child|son|daughter|wife|family|school|pickup)\b/i.test(lower)) category = 'family_relationships';
+        else if (/\b(password|login|account|pin code|ssn|license)\b/i.test(lower)) category = 'sensitive_personal';
+        try {
+          await memory.addMemory(pinContent, category, 95, true);
+          await bot.sendMessage(chatId, `📌 *Pinned* (${category}): "${pinContent.slice(0, 80)}"`, { parse_mode: 'Markdown' });
+        } catch (err) {
+          await bot.sendMessage(chatId, `❌ Pin failed: ${err.message}`);
+        }
+        return res.status(200).send('OK');
+      }
+
       // /memadd <content> <category>
       if (text.startsWith('/memadd ')) {
         const args = text.slice(8).trim();
@@ -1259,10 +1455,11 @@ module.exports = async (req, res) => {
       // ── /remind in <time> to <message> ───────────────────────────────────
       if (text.startsWith('/remind ')) {
         const input  = text.slice(8).trim();
-        const parsed = parseReminderTime(input);
+        const remindTz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const parsed = parseReminderTime(input, remindTz);
         if (!parsed) {
           await bot.sendMessage(chatId,
-            `⚠️ Format: \`/remind in 2h to call John\` or \`/remind in 30m check email\``,
+            `⚠️ Formats:\n\`/remind in 2h to call John\`\n\`/remind tomorrow at 9am check permits\`\n\`/remind friday at 3pm pick up materials\`\n\`/remind at 5pm call inspector\``,
             { parse_mode: 'Markdown' }
           );
           return res.status(200).send('OK');
@@ -1637,6 +1834,45 @@ module.exports = async (req, res) => {
       }
     }
 
+    // ── Voice → smart routing: check if voice note is a reminder, expense, or pin ──
+    if (voiceTranscript && isBoss && isPrivate) {
+      const vt = voiceTranscript;
+      // Check for reminder in voice
+      const voiceReminderMatch = vt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(.+)$/i);
+      if (voiceReminderMatch) {
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const parsed = parseReminderTime(voiceReminderMatch[1], tz);
+        if (parsed) {
+          await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
+          const timeStr = new Date(parsed.ts).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+          await bot.sendMessage(chatId, `🎙️ ⏰ Voice reminder set for *${timeStr}*: "${parsed.message}"`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+      }
+      // Check for expense in voice
+      const voiceExpense = vt.match(/(?:spent|bought|purchased|paid|picked up)\s+\$?([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i);
+      if (voiceExpense) {
+        const amount = voiceExpense[1].replace(',', '');
+        const vendor = voiceExpense[2].trim().replace(/[.,]+$/, '');
+        const jobName = voiceExpense[3]?.trim().replace(/[.,]+$/, '') || 'general';
+        const logEntry = `$${amount} at ${vendor} for ${jobName} (${new Date().toLocaleDateString('en-US')})`;
+        try {
+          await memory.addMemory(logEntry, 'work_projects', 70);
+          await bot.sendMessage(chatId, `🎙️ 💰 *Logged:* $${amount} at ${vendor}\n📁 Job: ${jobName}`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        } catch (err) { console.error('[VOICE] Expense log failed:', err.message); }
+      }
+      // Check for pin in voice
+      const voicePin = vt.match(/^(?:pin|save|note)\s*[:\-]?\s*(.+)$/i);
+      if (voicePin && voicePin[1].length > 10) {
+        try {
+          await memory.addMemory(voicePin[1].trim(), 'personal_preferences', 90, true);
+          await bot.sendMessage(chatId, `🎙️ 📌 *Pinned:* "${voicePin[1].trim().slice(0, 80)}"`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        } catch (err) { console.error('[VOICE] Pin failed:', err.message); }
+      }
+    }
+
     // ── Generate response (all work done BEFORE res.send — Vercel freezes after) ──
     console.log('[FLOW] Passed all checks, starting AI work...');
 
@@ -1648,6 +1884,93 @@ module.exports = async (req, res) => {
       ? (message.caption || 'What do you see in this image?')
       : (voiceTranscript || text);
     const cleanPrompt = rawPrompt.replace(new RegExp(BOT_USERNAME, 'i'), '').trim() || 'Hello!';
+
+    // ── Electrical quick tools (instant, no AI call) ────────────────────────
+    if (isBoss && !isPhoto) {
+      const elecCalc = detectElectricalCalc(cleanPrompt);
+      if (elecCalc) {
+        const result = formatElectricalResult(elecCalc);
+        if (result) {
+          await bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        }
+      }
+    }
+
+    // ── Quick expense/material logging ──────────────────────────────────────
+    if (isBoss && !isPhoto) {
+      const expenseMatch = cleanPrompt.match(/(?:spent|bought|purchased|paid|picked up|grabbed)\s+\$?([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i)
+        || cleanPrompt.match(/\$([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i);
+      if (expenseMatch) {
+        const amount = expenseMatch[1].replace(',', '');
+        const vendor = expenseMatch[2].trim().replace(/[.,]+$/, '');
+        const jobName = expenseMatch[3]?.trim().replace(/[.,]+$/, '') || 'general';
+        const logEntry = `$${amount} at ${vendor} for ${jobName} (${new Date().toLocaleDateString('en-US')})`;
+        try {
+          await memory.addMemory(logEntry, 'work_projects', 70);
+          await bot.sendMessage(chatId, `💰 *Logged:* $${amount} at ${vendor}\n📁 Job: ${jobName}\n\n_Ask "expenses for ${jobName}" to see totals._`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        } catch (err) {
+          console.error('[EXPENSE] Failed to log:', err.message);
+        }
+      }
+    }
+
+    // ── "Summarize today" / "what did we talk about today" ─────────────────
+    if (isBoss && isPrivate && !isPhoto) {
+      const todayMatch = /^(?:summarize|recap|summary of|what did (?:we|i|you)\s+(?:talk|discuss|cover|do|say)|what happened|debrief me on)\s+today/i.test(cleanPrompt)
+        || /^(?:today'?s?\s+(?:summary|recap|debrief))/i.test(cleanPrompt);
+      if (todayMatch) {
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const todayStr = new Date().toLocaleDateString('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+        const todayISO = new Date().toISOString().split('T')[0];
+        const entries = await redis.lrange(RAW_LOG_KEY, 0, 99);
+        const todayEntries = entries.filter(e => {
+          try { return JSON.parse(e).ts?.startsWith(todayISO); } catch { return false; }
+        });
+        if (!todayEntries.length) {
+          await bot.sendMessage(chatId, '📋 Nothing logged today yet.');
+          return res.status(200).send('OK');
+        }
+        await bot.sendMessage(chatId, `🔄 Summarizing ${todayEntries.length} exchanges from today...`);
+        try {
+          const logText = todayEntries.reverse().flatMap(e => {
+            try {
+              const { ts, sender, msg, reply } = JSON.parse(e);
+              return [`[${ts.split('T')[1]?.slice(0,5)}] ${sender}: "${msg.slice(0, 150)}" → Remy: "${reply.slice(0, 150)}"`];
+            } catch { return []; }
+          }).join('\n');
+          const { text: summary } = await generateText({
+            model: CHAT_MODEL,
+            prompt: `Summarize today's conversation between ${process.env.BOSS_NAME || 'the Boss'} and Remy. Pull out key topics, decisions, action items, and anything important. Be concise but complete:\n\n${logText}`,
+            maxTokens: 800,
+          });
+          await safeSend(chatId, `📋 *Today's Recap (${todayStr}):*\n\n${summary}`);
+        } catch (err) {
+          console.error('[SUMMARIZE] Today failed:', err.message);
+          await bot.sendMessage(chatId, '❌ Summary failed. Try again.');
+        }
+        return res.status(200).send('OK');
+      }
+    }
+
+    // ── Quick pin detection: "pin: Smith job is at 4521 NW 7th St" ─────────
+    if (isBoss && !isPhoto) {
+      const pinMatch = cleanPrompt.match(/^pin\s*[:\-]\s*(.+)$/i);
+      if (pinMatch && pinMatch[1].length >= 5) {
+        const pinContent = pinMatch[1].trim();
+        const lower = pinContent.toLowerCase();
+        let category = 'personal_preferences';
+        if (/\b(job|project|site|contract|client|permit|inspection|wire|panel|conduit)\b/i.test(lower)) category = 'work_projects';
+        else if (/\b(address|phone|email|number|contact)\b/i.test(lower)) category = 'contacts';
+        else if (/\b(kid|child|son|daughter|wife|family|school|pickup)\b/i.test(lower)) category = 'family_relationships';
+        try {
+          await memory.addMemory(pinContent, category, 95, true);
+          await bot.sendMessage(chatId, `📌 *Pinned* (${category}): "${pinContent.slice(0, 80)}"`, { parse_mode: 'Markdown' });
+          return res.status(200).send('OK');
+        } catch (err) { console.error('[PIN] Failed:', err.message); }
+      }
+    }
 
     // ── Natural language schedule detection (Boss DMs only) ────────────────
     if (isBoss && isPrivate && !isPhoto) {
@@ -1686,12 +2009,12 @@ module.exports = async (req, res) => {
 
     // ── Natural language reminder detection (Boss DMs only, no AI call) ──
     if (isBoss && isPrivate && !isPhoto) {
-      const reminderMatch = cleanPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(in\s+\d+\s*(?:m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?.+)$/i);
+      const reminderMatch = cleanPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(.+)$/i);
       if (reminderMatch) {
-        const parsed = parseReminderTime(reminderMatch[1]);
+        const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
+        const parsed = parseReminderTime(reminderMatch[1], tz);
         if (parsed) {
           await redis.zadd(REMINDERS_KEY, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
-          const tz = (await redis.get(TIMEZONE_KEY)) || process.env.BOSS_TIMEZONE || 'America/New_York';
           const timeStr = new Date(parsed.ts).toLocaleString('en-US', {
             timeZone: tz,
             dateStyle: 'medium',
@@ -1856,6 +2179,29 @@ ${contextMemory || 'No memory recorded yet.'}
 
 VISUAL CAPABILITY:
 You CAN send images and maps. When ${BOSS_NAME} asks to see something visual (a photo, picture, image, map, or what something looks like), respond naturally with a brief comment — the image or map will be delivered automatically right after your message. Do NOT say you can't show images. Do NOT apologize or explain limitations. Just respond as if you're pulling it up.
+
+ELECTRICAL TOOLS (instant, no AI needed):
+${BOSS_NAME} is an electrical project manager. You have built-in NEC calculators:
+- **Conduit fill**: "conduit fill 1 inch EMT with 10 #12 THHN" → instant NEC Chapter 9 calc
+- **Voltage drop**: "voltage drop 200ft 10AWG 40A 240V" → instant calc with pass/fail
+- **Wire sizing**: "what wire for 60 amps" → NEC Table 310.16 lookup
+These are handled automatically — if ${BOSS_NAME} asks about conduit fill, voltage drop, or wire sizing, the answer fires instantly. You don't need to calculate manually.
+
+EXPENSE LOGGING:
+${BOSS_NAME} can log job expenses by saying things like "spent $380 at Home Depot for the Smith job". This is auto-detected and saved to memory. He can later ask "expenses for the Smith job" and you can search memory for those entries.
+
+PIN FEATURE:
+${BOSS_NAME} can pin important info permanently with "pin: Smith job address is 4521 NW 7th St" or \`/pin\`. Pinned items never decay.
+
+REMINDERS:
+${BOSS_NAME} can set reminders in many formats — not just "in 2h" but also:
+- "remind me tomorrow at 9am to check permits"
+- "remind me friday at 3pm to pick up materials"
+- "remind me at 5pm to call the inspector"
+Voice messages that contain reminders, expenses, or pins are auto-detected and handled.
+
+DAILY RECAP:
+${BOSS_NAME} can say "summarize today" or "what did we talk about today" to get a recap of all exchanges.
 
 Never make ${BOSS_NAME} repeat himself. Reference timestamps naturally when relevant.
 Use Markdown where it sharpens things: **bold** for key points, bullets for intel, \`code\` for technical ops.

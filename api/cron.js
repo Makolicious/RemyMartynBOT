@@ -159,6 +159,36 @@ function buildSearchQueries(jobMessage, isLocal) {
   return queries;
 }
 
+// Fetch weather for South Florida
+async function fetchWeather() {
+  const serperKey = process.env.SERPER_API_KEY;
+  if (!serperKey) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: 'weather today Miami FL', num: 1 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.answerBox) {
+      const ab = data.answerBox;
+      return ab.answer || ab.snippet || null;
+    }
+    return data.organic?.[0]?.snippet || null;
+  } catch { return null; }
+}
+
+// Count pending reminders for the boss
+async function countPendingReminders() {
+  try {
+    const count = await redis.zcard(REMINDERS_KEY);
+    const jobCount = await redis.zrangebyscore(CRON_JOBS_KEY, 0, '+inf');
+    return { reminders: count, cronJobs: jobCount.length };
+  } catch { return { reminders: 0, cronJobs: 0 }; }
+}
+
 // Execute an AI task job — Sonnet for quality, Serper for live data
 async function executeAiTask(job) {
   const bossName = process.env.BOSS_NAME || 'Mako';
@@ -170,32 +200,61 @@ async function executeAiTask(job) {
     hour: '2-digit', minute: '2-digit',
   });
 
+  // Detect if this is a morning briefing / debrief type job
+  const isBriefing = /\b(morning|briefing|debrief|daily\s+(?:summary|update|report)|good\s+morning|wake\s+up)\b/i.test(job.message);
+
   // Run targeted searches based on what the job actually asks for
-  const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary)\b/i.test(job.message);
+  const needsSearch = /\b(news|weather|price|stock|latest|today|current|trending|headlines|market|debrief|summary|briefing)\b/i.test(job.message);
   let searchSection = '';
+  let briefingContext = '';
+
   if (needsSearch) {
     const isLocal = /\blocal\b/i.test(job.message);
     const searchQueries = buildSearchQueries(job.message, isLocal);
     console.log(`[CRON] Running ${searchQueries.length} targeted searches for job: "${job.message.slice(0, 60)}"`);
-    const results = await Promise.all(searchQueries.map(({ fn, q }) => fn(q)));
-    const combined = results.filter(Boolean).join('\n---\n');
+
+    // For briefings, also fetch weather and reminder count in parallel
+    const searchPromises = searchQueries.map(({ fn, q }) => fn(q));
+    if (isBriefing) {
+      searchPromises.push(fetchWeather());
+      searchPromises.push(countPendingReminders());
+    }
+
+    const allResults = await Promise.all(searchPromises);
+
+    // Split out search results vs briefing extras
+    const searchResults = allResults.slice(0, searchQueries.length);
+    const combined = searchResults.filter(Boolean).join('\n---\n');
     if (combined) {
       searchSection = `\n\nLIVE NEWS DATA (fetched just now — synthesize ALL of this into the debrief, do NOT skip or ignore any results, do NOT fabricate stories not found here):\n${combined}\n`;
     }
     console.log(`[CRON] Search returned ${combined.split('\n').length} lines of data`);
+
+    if (isBriefing) {
+      const weather = allResults[searchQueries.length];
+      const counts = allResults[searchQueries.length + 1] || {};
+      const parts = [];
+      if (weather) parts.push(`WEATHER: ${weather}`);
+      if (counts.reminders > 0) parts.push(`PENDING REMINDERS: ${counts.reminders} one-time reminder(s) waiting`);
+      if (counts.cronJobs > 0) parts.push(`ACTIVE SCHEDULED TASKS: ${counts.cronJobs} recurring job(s)`);
+      parts.push(`BOSS PROFILE: ${bossName} is an electrical project manager and father based in South Florida. Tailor the briefing to his day — mention weather conditions relevant to outdoor job sites, and keep it practical.`);
+      if (parts.length) briefingContext = '\n\n' + parts.join('\n');
+    }
   }
 
   // Use Sonnet if available (better at synthesis), fall back to GLM
   const taskModel = FALLBACK_MODEL || CHAT_MODEL;
-  const modelName = FALLBACK_MODEL ? 'Sonnet' : 'GLM';
-  console.log(`[CRON] AI task using ${modelName} | search: ${needsSearch} | hasResults: ${!!searchSection}`);
+  const modelName = FALLBACK_MODEL ? 'Anthropic' : 'GLM';
+  console.log(`[CRON] AI task using ${modelName} | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
 
   const { text } = await generateText({
     model: taskModel,
-    system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}.${needsSearch ? ` ${bossName} is based in South Florida (Miami / Hialeah). "Local" always means Miami-Dade / South Florida.` : ''}${searchSection}`,
-    prompt: needsSearch
-      ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`
-      : `Execute this scheduled task for ${bossName}: ${job.message}\n\nKeep it short and direct. No filler.`,
+    system: `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}. ${bossName} is based in South Florida (Miami / Hialeah). "Local" always means Miami-Dade / South Florida.${briefingContext}${searchSection}`,
+    prompt: isBriefing
+      ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live data provided above. Never fabricate information.\n\nFormat this as a MORNING BRIEFING:\n- Start with a greeting and the weather (temperature, conditions, heat index if hot — relevant for job sites)\n- Mention pending reminders/tasks count if any\n- Then news sections with ## headers and relevant emojis\n- Use --- separators between sections\n- 3+ bullet points per category\n- End with a short motivational line\n- Keep it punchy and scannable`
+      : needsSearch
+        ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`
+        : `Execute this scheduled task for ${bossName}: ${job.message}\n\nKeep it short and direct. No filler.`,
     maxTokens: 2500,
   });
 
