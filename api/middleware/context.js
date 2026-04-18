@@ -2,6 +2,51 @@ const memory = require('../memory');
 const { redis, KEYS, MAX_HIST_MSGS } = require('../lib/redis');
 const { BOSS_NAME, BOSS_ALIASES } = require('../lib/telegram');
 const { formatLocalTime } = require('../lib/time');
+const { generateText, MEMORY_MODEL } = require('../lib/models');
+
+// ── LLM-gated relevance filter ────────────────────────────────────────────────
+// Uses Haiku to pick which semantically-retrieved memories are actually
+// relevant to the current message. Permanent/pinned memories bypass this —
+// they always ride along. This trims noise from the prompt without losing
+// identity/core facts. Falls back to "keep top N" on any failure.
+async function gateMemoriesByRelevance(candidates, currentMessage, maxKeep = 4) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  if (candidates.length <= maxKeep) return candidates;
+  if (!MEMORY_MODEL || typeof currentMessage !== 'string') return candidates.slice(0, maxKeep);
+
+  try {
+    const numbered = candidates
+      .map((m, i) => `${i}. [${m.category}] ${String(m.content).slice(0, 160)}`)
+      .join('\n');
+    const prompt = `User just said: "${currentMessage.slice(0, 300)}"
+
+Candidate memories (may or may not be relevant):
+${numbered}
+
+Return ONLY a JSON array of up to ${maxKeep} indices of the memories most likely to help answer or respond naturally to the user's message. Be strict — if nothing is clearly relevant, return [].`;
+
+    const { text } = await generateText({
+      model: MEMORY_MODEL,
+      system: 'You filter memory candidates for relevance. Output only a JSON array of indices, nothing else.',
+      prompt,
+      temperature: 0.1,
+      maxTokens: 80,
+      abortSignal: AbortSignal.timeout(4000),
+    });
+    const match = text.match(/\[[\d,\s]*\]/);
+    if (!match) return candidates.slice(0, maxKeep);
+    const indices = JSON.parse(match[0]);
+    if (!Array.isArray(indices)) return candidates.slice(0, maxKeep);
+    const picked = indices
+      .filter(i => Number.isInteger(i) && i >= 0 && i < candidates.length)
+      .slice(0, maxKeep)
+      .map(i => candidates[i]);
+    return picked;
+  } catch (err) {
+    console.warn('[MEMORY] Relevance gate failed, using top-N fallback:', err.message);
+    return candidates.slice(0, maxKeep);
+  }
+}
 
 // ── Build memory context for AI prompt ────────────────────────────────────────
 async function buildContextMemory(currentMessage) {
@@ -19,7 +64,9 @@ async function buildContextMemory(currentMessage) {
 
     const permanentMemories = permanentResults.flat();
     const permanentIds = new Set(permanentMemories.map(m => m.id));
-    const extraMemories = searchResults.filter(m => !permanentIds.has(m.id));
+    const rawExtras = searchResults.filter(m => !permanentIds.has(m.id));
+    // LLM-gate the semantic hits — permanent memories always pass through
+    const extraMemories = await gateMemoriesByRelevance(rawExtras, currentMessage, 4);
 
     const grouped = {};
     for (const mem of [...permanentMemories, ...extraMemories]) {
@@ -238,4 +285,4 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
   }
 }
 
-module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext };
+module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext, gateMemoriesByRelevance };
