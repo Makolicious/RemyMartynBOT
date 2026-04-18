@@ -30,24 +30,29 @@ const verifyShopifyWebhook = (req, rawBody) => {
   return isValid;
 };
 
+// Read raw request body from stream (must run before any body parsing)
+const readRawBody = (req) => new Promise((resolve, reject) => {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  req.on('error', reject);
+});
+
 module.exports = async (req, res) => {
-  // Only POST requests
   if (req.method !== 'POST') {
     return res.status(200).send('Shopify webhook endpoint ready');
   }
 
-  // Get raw body from request
-  let rawBody = '';
-  if (req.rawBody) {
-    rawBody = req.rawBody;
-  } else if (typeof req.body === 'string') {
-    rawBody = req.body;
-  } else if (Buffer.isBuffer(req.body)) {
-    rawBody = req.body.toString('utf8');
-  } else {
-    // Fallback: stringify the parsed body
-    rawBody = JSON.stringify(req.body);
+  // Read raw body BEFORE any parsing happens
+  let rawBody;
+  try {
+    rawBody = await readRawBody(req);
+  } catch (e) {
+    console.error('[SHOPIFY] Failed to read raw body:', e);
+    return res.status(400).send('Bad request');
   }
+
+  console.log('[SHOPIFY] Received webhook. Topic:', req.headers['x-shopify-topic'], 'BodyLen:', rawBody.length);
 
   // Verify the webhook came from Shopify
   if (!verifyShopifyWebhook(req, rawBody)) {
@@ -56,17 +61,11 @@ module.exports = async (req, res) => {
 
   const topic = req.headers['x-shopify-topic'];
   let body;
-
-  // Parse body if it's a string
-  if (typeof rawBody === 'string') {
-    try {
-      body = JSON.parse(rawBody);
-    } catch (e) {
-      console.error('[SHOPIFY] Failed to parse JSON body');
-      return res.status(400).send('Invalid JSON');
-    }
-  } else {
-    body = req.body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch (e) {
+    console.error('[SHOPIFY] Failed to parse JSON body');
+    return res.status(400).send('Invalid JSON');
   }
 
   try {
@@ -167,3 +166,6 @@ async function handleOrderUpdated(order, res) {
 
   return res.status(200).send('OK');
 }
+
+// Disable Vercel automatic body parsing — we need raw bytes for HMAC
+module.exports.config = { api: { bodyParser: false } };
