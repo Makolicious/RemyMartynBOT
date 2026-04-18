@@ -302,7 +302,8 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   let aiResponse;
   try {
     const abortController = new AbortController();
-    const aiTimeout = setTimeout(() => abortController.abort(), 25000);
+    // Give extra time when tools are available — search + generation needs headroom
+    const aiTimeout = setTimeout(() => abortController.abort(), tools ? 35000 : 25000);
     try {
       const result = await generateText({
         model: primaryModel,
@@ -312,7 +313,9 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
         maxSteps: 5,  // allow up to 5 tool calls per turn
         abortSignal: abortController.signal,
       });
-      aiResponse = result.text;
+      // result.text can be empty if the last step was a tool call with no follow-up text
+      // Fall back to the last tool result or a generic acknowledgement
+      aiResponse = result.text || result.steps?.slice(-1)[0]?.text || "Done.";
       console.log(`[AI] ${primaryName} success in ${Date.now() - aiStartTime}ms | steps: ${result.steps?.length || 1}`);
     } finally {
       clearTimeout(aiTimeout);
