@@ -1,6 +1,6 @@
 const { bot, safeSend, BOSS_NAME, MAIN_MENU_KEYBOARD } = require('../lib/telegram');
 const { redis, KEYS, MAX_LOG_ENTRIES } = require('../lib/redis');
-const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL } = require('../lib/models');
+const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, FALLBACK_MODEL } = require('../lib/models');
 const { parseReminderTime, parseCronCommand, localTimeToUTC, calculateNextFire, parseDayOfWeek, getBossTimezone } = require('../lib/time');
 const { needsWebSearch } = require('../tools/search');
 const { planGoalTool } = require('../tools/plan');
@@ -306,7 +306,7 @@ async function handleCommand(message, chatId, text, res) {
         } catch { return []; }
       }).join('\n');
       const { text: summary } = await generateText({
-        model: CHAT_MODEL,
+        model: FALLBACK_MODEL || CHAT_MODEL,
         prompt: `Summarize these conversation exchanges concisely. Key topics, decisions, and important points only:\n\n${logText}`,
       });
       await safeSend(chatId, `\u{1F4CB} *Summary (last ${entries.length} exchanges):*\n\n${summary}`);

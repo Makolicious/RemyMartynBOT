@@ -1,6 +1,6 @@
 const { bot, safeSend, BOT_USERNAME, BOSS_ID, BOSS_NAME } = require('../lib/telegram');
 const { redis, KEYS, MAX_HIST_MSGS, MAX_LOG_ENTRIES, MIN_MEMORY_LEN } = require('../lib/redis');
-const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, pickModels } = require('../lib/models');
+const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, FALLBACK_MODEL, pickModels } = require('../lib/models');
 const { stepCountIs } = require('ai');
 const { parseCronNL, parseReminderTime, localTimeToUTC, getBossTimezone } = require('../lib/time');
 const { buildContextMemory, getHistory, buildSystemPrompt } = require('../middleware/context');
@@ -153,7 +153,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
           } catch { return []; }
         }).join('\n');
         const { text: summary } = await generateText({
-          model: CHAT_MODEL,
+          model: FALLBACK_MODEL || CHAT_MODEL,
           prompt: `Summarize today's conversation between ${BOSS_NAME} and Remy. Pull out key topics, decisions, action items, and anything important. Be concise but complete:\n\n${logText}`,
           maxTokens: 800,
         });

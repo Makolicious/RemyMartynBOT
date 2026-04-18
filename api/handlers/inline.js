@@ -1,6 +1,6 @@
 const { bot, BOSS_ID } = require('../lib/telegram');
 const { redis, KEYS } = require('../lib/redis');
-const { generateText, CHAT_MODEL, analyzeQueryComplexity } = require('../lib/models');
+const { generateText, CHAT_MODEL, MEMORY_MODEL, analyzeQueryComplexity } = require('../lib/models');
 const { getBossTimezone, formatLocalTime } = require('../lib/time');
 
 // ── Inline mode handler (@RemyMartynBot in any chat) ─────────────────────────
@@ -36,8 +36,9 @@ async function handleInlineQuery(query, res) {
   console.log(`[INLINE] Complexity: ${complexity}, maxTokens: ${maxTokens}, Query: "${queryText.slice(0, 50)}"...`);
 
   try {
+    // Inline mode: 8s window, so use Anthropic Haiku (fast) with GLM fallback
     const { text: answer } = await generateText({
-      model: CHAT_MODEL,
+      model: MEMORY_MODEL || CHAT_MODEL,
       system: systemPrompt,
       messages: [{ role: 'user', content: queryText }],
       maxTokens,

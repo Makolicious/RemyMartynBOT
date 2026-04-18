@@ -1,6 +1,6 @@
 const { bot, safeSend, safeEdit, BOSS_ID, BOSS_NAME, MAIN_MENU_KEYBOARD, backButton } = require('../lib/telegram');
 const { redis, KEYS } = require('../lib/redis');
-const { generateText, CHAT_MODEL } = require('../lib/models');
+const { generateText, CHAT_MODEL, FALLBACK_MODEL } = require('../lib/models');
 const memory = require('../memory');
 
 async function handleCallbackQuery(query, res) {
@@ -148,7 +148,7 @@ async function handleCallbackQuery(query, res) {
         } catch { return []; }
       }).join('\n');
       const { text: summary } = await generateText({
-        model: CHAT_MODEL,
+        model: FALLBACK_MODEL || CHAT_MODEL,
         prompt: `Summarize these conversation exchanges concisely. Key topics, decisions, and important points only:\n\n${logText}`,
       });
       await safeSend(chatId, `📰 *Summary (last ${entries.length} exchanges):*\n\n${summary}`);

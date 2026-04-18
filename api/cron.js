@@ -250,18 +250,31 @@ async function executeAiTask(job) {
       ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`
       : `Execute this scheduled task for ${bossName}: ${job.message}\n\nKeep it short and direct. No filler.`;
 
-  // Use GLM for cron tasks — faster, avoids Anthropic timeouts on serverless
-  // Anthropic Sonnet is too slow for the tight Vercel function window
-  console.log(`[CRON] AI task using GLM | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
+  // Try Anthropic first (better quality), fall back to GLM on timeout/error
+  console.log(`[CRON] AI task | primary: ${FALLBACK_MODEL ? 'Anthropic' : 'GLM'} | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
 
   let text;
-  const result = await generateText({
-    model: CHAT_MODEL,
-    system: systemMsg,
-    prompt: promptMsg,
-    maxTokens: 2000,
-  });
-  text = result.text;
+  try {
+    const abortPrimary = AbortSignal.timeout(25000);
+    const result = await generateText({
+      model: FALLBACK_MODEL || CHAT_MODEL,
+      system: systemMsg,
+      prompt: promptMsg,
+      maxTokens: 2000,
+      abortSignal: abortPrimary,
+    });
+    text = result.text;
+  } catch (err) {
+    if (!FALLBACK_MODEL) throw err;  // no fallback available
+    console.warn(`[CRON] Anthropic failed (${err.name}: ${err.message?.slice(0, 80)}), falling back to GLM`);
+    const fallback = await generateText({
+      model: CHAT_MODEL,
+      system: systemMsg,
+      prompt: promptMsg,
+      maxTokens: 2000,
+    });
+    text = fallback.text;
+  }
 
   return text;
 }
