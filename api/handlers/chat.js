@@ -3,7 +3,7 @@ const { redis, KEYS, MAX_HIST_MSGS, MAX_LOG_ENTRIES, MIN_MEMORY_LEN } = require(
 const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, FALLBACK_MODEL, pickModels } = require('../lib/models');
 const { stepCountIs } = require('ai');
 const { parseCronNL, parseReminderTime, localTimeToUTC, getBossTimezone } = require('../lib/time');
-const { buildContextMemory, getHistory, buildSystemPrompt } = require('../middleware/context');
+const { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext } = require('../middleware/context');
 const { needsWebSearch, searchWebTool, imageSearch, detectVisualRequest } = require('../tools/search');
 const { setReminderTool, listRemindersTool } = require('../tools/reminder');
 const { createScheduleTool, editScheduleTool, deleteScheduleTool, listSchedulesTool } = require('../tools/schedule');
@@ -262,14 +262,12 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
       Promise.resolve(null),
   ]);
 
-  // ── Build system prompt ────────────────────────────────────────────────────
+  // ── Build system prompt — stable (cached) vs dynamic (uncached) ────────────
   const role = isBoss ? 'boss' : 'approved';
-  let systemPrompt = buildSystemPrompt({ role, isPrivate, senderName, timezone, contextMemory });
-
-  // Inject live search results if available
-  if (searchResults) {
-    systemPrompt += `\n\n--- LIVE INTEL ---\n${searchResults}\n--- END LIVE INTEL ---\nUse this to answer current questions. Reference it naturally ("Just looked this up..." or "As of today...").`;
-  }
+  const stableSystem = buildSystemPrompt({ role, isPrivate, senderName });
+  const dynamicContext = buildDynamicContext({ timezone, contextMemory, searchResults });
+  // Fallback-friendly combined string (for GLM, which doesn't use cache control)
+  const combinedSystemString = `${stableSystem}\n\n${dynamicContext}`;
 
   // ── Build current message ──────────────────────────────────────────────────
   let currentMessage;
@@ -294,35 +292,88 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
 
   console.log(`[AI] Routing \u{2192} ${primaryName} | prompt: ${rawPrompt.length} chars | history: ${history.length}`);
   const aiStartTime = Date.now();
-  const aiMessages = [...history, currentMessage];
 
   // ── Build tools (only for boss in private — tool use is boss-only) ─────────
   const tools = (isBoss && isPrivate) ? buildTools(chatId, timezone) : undefined;
 
+  // ── Shape messages: Anthropic gets cache_control on stable system, GLM gets a string system
+  const isPrimaryAnthropic = FALLBACK_MODEL && primaryModel === FALLBACK_MODEL;
+  const primaryMessages = isPrimaryAnthropic
+    ? [
+        {
+          role: 'system',
+          content: stableSystem,
+          providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+        },
+        { role: 'system', content: dynamicContext },
+        ...history,
+        currentMessage,
+      ]
+    : [...history, currentMessage];
+  const primarySystemParam = isPrimaryAnthropic ? undefined : combinedSystemString;
+
   // ── Generate response with tool use ────────────────────────────────────────
   let aiResponse;
+  let primaryResult = null;  // kept for debug metadata
+  const debugTrace = {
+    ts: new Date().toISOString(),
+    model: null,
+    usedFallback: false,
+    steps: 0,
+    toolCalls: [],
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    memoryChars: (contextMemory || '').length,
+    webSearch: !!searchResults,
+    visual: visualReq?.type || null,
+    promptChars: rawPrompt.length,
+    historyLen: history.length,
+    durationMs: 0,
+    error: null,
+  };
   try {
     const abortController = new AbortController();
     // Give extra time when tools are available — search + generation needs headroom
     const aiTimeout = setTimeout(() => abortController.abort(), tools ? 35000 : 25000);
     try {
-      const result = await generateText({
+      primaryResult = await generateText({
         model: primaryModel,
-        system: systemPrompt,
-        messages: aiMessages,
+        system: primarySystemParam,
+        messages: primaryMessages,
         tools,
         stopWhen: stepCountIs(5),  // allow up to 5 tool calls per turn
         abortSignal: abortController.signal,
       });
       // result.text can be empty if the last step was a tool call with no follow-up text
       // Fall back to the last tool result or a generic acknowledgement
-      aiResponse = result.text || result.steps?.slice(-1)[0]?.text || "Done.";
-      console.log(`[AI] ${primaryName} success in ${Date.now() - aiStartTime}ms | steps: ${result.steps?.length || 1}`);
+      aiResponse = primaryResult.text || primaryResult.steps?.slice(-1)[0]?.text || "Done.";
+      const cacheMeta = primaryResult.providerMetadata?.anthropic || {};
+      const cacheReadTokens = cacheMeta.cacheReadInputTokens || 0;
+      const cacheCreateTokens = cacheMeta.cacheCreationInputTokens || 0;
+      console.log(`[AI] ${primaryName} success in ${Date.now() - aiStartTime}ms | steps: ${primaryResult.steps?.length || 1} | cache read: ${cacheReadTokens}, created: ${cacheCreateTokens}`);
+
+      // ── Debug trace: primary success ──
+      debugTrace.model = primaryName;
+      debugTrace.steps = primaryResult.steps?.length || 1;
+      debugTrace.cacheReadTokens = cacheReadTokens;
+      debugTrace.cacheCreateTokens = cacheCreateTokens;
+      debugTrace.durationMs = Date.now() - aiStartTime;
+      // Flatten tool calls across all steps
+      if (Array.isArray(primaryResult.steps)) {
+        for (const step of primaryResult.steps) {
+          if (Array.isArray(step.toolCalls)) {
+            for (const tc of step.toolCalls) {
+              debugTrace.toolCalls.push(tc.toolName || tc.name || 'unknown');
+            }
+          }
+        }
+      }
     } finally {
       clearTimeout(aiTimeout);
     }
   } catch (primaryErr) {
     console.error(`[AI] ${primaryName} FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
+    debugTrace.error = `${primaryName}: ${primaryErr.name} ${primaryErr.message?.slice(0, 120)}`;
 
     if (secondaryModel) {
       console.log(`[AI] Falling back to ${secondaryName}...`);
@@ -333,13 +384,17 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
         try {
           const result = await generateText({
             model: secondaryModel,
-            system: systemPrompt,
-            messages: aiMessages,
+            system: combinedSystemString,
+            messages: [...history, currentMessage],
             // No tools on fallback — simpler and more reliable
             abortSignal: abortController2.signal,
           });
           aiResponse = result.text;
           console.log(`[AI] ${secondaryName} fallback success in ${Date.now() - fallbackStart}ms`);
+          debugTrace.model = secondaryName;
+          debugTrace.usedFallback = true;
+          debugTrace.steps = result.steps?.length || 1;
+          debugTrace.durationMs = Date.now() - aiStartTime;
         } finally {
           clearTimeout(fallbackTimeout);
         }
@@ -356,6 +411,9 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
       return res.status(200).send('OK');
     }
   }
+
+  // ── Stash debug trace for /debug command (1h TTL) ──
+  redis.set(KEYS.DEBUG_LAST(chatId), JSON.stringify(debugTrace), 'EX', 3600).catch(() => {});
 
   // ── Send response ──────────────────────────────────────────────────────────
   await safeSend(chatId, aiResponse);

@@ -29,6 +29,7 @@ const KEYS = {
   CRON_ENTRY:   (jobId) => `remy_cron:${jobId}`,
   EXCHANGE_COUNT: 'remy_exchange_count',
   SPAM:         (senderId) => `spam_${senderId}_${Math.floor(Date.now() / 60000)}`,
+  DEBUG_LAST:   (chatId) => `debug_last_${chatId}`,  // last turn's debug trace (TTL 1h)
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────

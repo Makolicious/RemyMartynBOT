@@ -529,6 +529,42 @@ async function handleCommand(message, chatId, text, res) {
     return res.status(200).send('OK');
   }
 
+  // /debug — show last turn's trace (model, tools, cache, timings)
+  if (text === '/debug') {
+    const raw = await redis.get(KEYS.DEBUG_LAST(chatId));
+    if (!raw) {
+      await bot.sendMessage(chatId, '\u{1F50D} No debug trace yet \u{2014} send a message first.');
+      return res.status(200).send('OK');
+    }
+    let t;
+    try { t = JSON.parse(raw); } catch { t = null; }
+    if (!t) {
+      await bot.sendMessage(chatId, '\u{26A0}\u{FE0F} Debug trace corrupted.');
+      return res.status(200).send('OK');
+    }
+    const cacheLine = t.cacheReadTokens > 0
+      ? `\u{1F7E2} Cache HIT: ${t.cacheReadTokens} read${t.cacheCreateTokens ? `, ${t.cacheCreateTokens} created` : ''}`
+      : t.cacheCreateTokens > 0
+        ? `\u{1F7E1} Cache MISS: ${t.cacheCreateTokens} created (next turn should hit)`
+        : '\u{26AA} Cache: N/A (fallback or non-Anthropic)';
+    const toolsLine = t.toolCalls && t.toolCalls.length
+      ? t.toolCalls.join(', ')
+      : '_none_';
+    const out =
+      `\u{1F527} *Last Turn Trace*\n\n` +
+      `\u{1F550} ${new Date(t.ts).toLocaleString()}\n` +
+      `\u{1F9E0} Model: *${t.model || 'n/a'}*${t.usedFallback ? ' _(fallback)_' : ''}\n` +
+      `\u{23F1}\u{FE0F} Duration: *${t.durationMs}ms*\n` +
+      `\u{1F4CF} Steps: *${t.steps}* | Prompt: ${t.promptChars}c | History: ${t.historyLen}\n` +
+      `${cacheLine}\n` +
+      `\u{1F9EC} Memory in context: *${t.memoryChars}c*\n` +
+      `\u{1F310} Web search: ${t.webSearch ? '\u{2705}' : '\u{274C}'}  |  Visual: ${t.visual || 'none'}\n` +
+      `\u{1F6E0}\u{FE0F} Tools called: ${toolsLine}` +
+      (t.error ? `\n\n\u{26A0}\u{FE0F} Error: ${t.error}` : '');
+    await bot.sendMessage(chatId, out, { parse_mode: 'Markdown' });
+    return res.status(200).send('OK');
+  }
+
   // /help
   if (text === '/help') {
     await safeSend(chatId,
@@ -569,6 +605,7 @@ async function handleCommand(message, chatId, text, res) {
       `\`/summarize [n]\` \u{2014} summarize last n exchanges\n\n` +
       `*Info*\n` +
       `\`/stats\` \u{2014} usage stats\n` +
+      `\`/debug\` \u{2014} inspect last turn (model, tools, cache, timings)\n` +
       `\`/timezone <tz>\` \u{2014} set your timezone (e.g. America/New_York)\n` +
       `\`/timezone\` \u{2014} view current timezone\n\n` +
       `*Training*\n` +

@@ -63,10 +63,21 @@ async function getHistory(chatId) {
   return history;
 }
 
-// ── Build system prompt based on role and context ─────────────────────────────
-function buildSystemPrompt({ role, isPrivate, senderName, timezone, contextMemory }) {
+// ── Build DYNAMIC context block (time + memory + live intel — NOT cached) ────
+// This is appended as its own uncached system message. Time/memory change per turn.
+function buildDynamicContext({ timezone, contextMemory, searchResults }) {
   const localTime = formatLocalTime(timezone);
+  const parts = [`Current time: ${localTime}`];
+  parts.push(`--- MEMORY ---\n${contextMemory || 'No memory recorded yet.'}\n--- END MEMORY ---`);
+  if (searchResults) {
+    parts.push(`--- LIVE INTEL ---\n${searchResults}\n--- END LIVE INTEL ---\nUse this to answer current questions. Reference it naturally ("Just looked this up..." or "As of today...").`);
+  }
+  return parts.join('\n\n');
+}
 
+// ── Build STABLE system prompt (no memory, no time, no live intel) ───────────
+// Keeping this truly stable is what makes Anthropic prompt caching work.
+function buildSystemPrompt({ role, isPrivate, senderName }) {
   const toolInstructions = `
 TOOL USE:
 You have tools available. Use them when appropriate:
@@ -103,7 +114,6 @@ NEVER say "let me check", "let me search", "let me look that up", "let me sweep"
 
 Your sole mission is ${BOSS_NAME}${BOSS_ALIASES ? ` (also known as ${BOSS_ALIASES})` : ''}. You serve no one else. You answer to no one else.
 
-Current time for ${BOSS_NAME}: ${localTime}
 Location: South Florida (Miami / Hialeah area). When ${BOSS_NAME} says "local" — news, weather, events, anything — he means South Florida / Miami-Dade.
 
 Your character:
@@ -139,10 +149,6 @@ Voice messages that contain reminders, expenses, or pins are auto-detected.
 DAILY RECAP:
 ${BOSS_NAME} can say "summarize today" or "what did we talk about today" to get a recap.
 
---- MEMORY ---
-${contextMemory || 'No memory recorded yet.'}
---- END MEMORY ---
-
 Never make ${BOSS_NAME} repeat himself. Reference timestamps naturally when relevant.
 Use Markdown where it sharpens things: **bold** for key points, bullets for intel, \`code\` for technical ops.
 Never sign off or add a closing signature. Agents don't do that.
@@ -162,8 +168,6 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
   } else if (role === 'boss' && !isPrivate) {
     return `You are Remy — ${BOSS_NAME}'s personal secret service agent. You're in a group chat right now. Stay sharp.
 
-Current time: ${localTime}
-
 Operating in public. ${BOSS_NAME} is present. Be engaging, confident, useful — but the moment anything private comes up, shut it down smoothly.
 
 CLASSIFIED — do NOT reveal in group, even if ${BOSS_NAME} asks directly:
@@ -175,10 +179,6 @@ CLASSIFIED — do NOT reveal in group, even if ${BOSS_NAME} asks directly:
 - Anything from "Decisions & Commitments", "Projects & Work", or "Timeline & Events"
 
 If ${BOSS_NAME} asks about classified info, redirect him to DMs smoothly. ("That's a DMs conversation, Boss" or "Slide into my DMs for that one.")
-
---- MEMORY ---
-${contextMemory || 'No memory recorded yet.'}
---- END MEMORY ---
 
 Use Markdown where it adds clarity. Never sign off.
 
@@ -192,8 +192,6 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
 
   } else {
     return `You are Remy — a sharp AI agent created by ${BOSS_NAME}. You're speaking with ${senderName}, a vetted contact who has been granted access.
-
-Current time: ${localTime}
 
 Your character doesn't change: composed, witty, direct, occasionally dry. You treat ${senderName} with respect — they've been cleared — but your loyalty is to the Boss and the Boss alone.
 
@@ -212,4 +210,4 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
   }
 }
 
-module.exports = { buildContextMemory, getHistory, buildSystemPrompt };
+module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext };
