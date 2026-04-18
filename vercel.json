@@ -2,6 +2,7 @@
   "functions": {
     "api/webhook.js": { "maxDuration": 60 },
     "api/cron.js":    { "maxDuration": 60 },
+    "api/reflect.js": { "maxDuration": 60 },
     "api/admin.js":   { "maxDuration": 30 },
     "api/shopify-webhook.js": { "maxDuration": 30 }
   },
@@ -13,6 +14,10 @@
     {
       "path":     "/api/cron",
       "schedule": "* * * * *"
+    },
+    {
+      "path":     "/api/reflect",
+      "schedule": "30 7 * * *"
     }
   ]
 }

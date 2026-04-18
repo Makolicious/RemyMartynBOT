@@ -529,6 +529,48 @@ async function handleCommand(message, chatId, text, res) {
     return res.status(200).send('OK');
   }
 
+  // /reflect — view latest nightly reflection (or trigger one)
+  if (text === '/reflect' || text === '/reflect force') {
+    const force = text.endsWith('force');
+    if (force) {
+      await bot.sendMessage(chatId, '\u{1F504} Generating fresh reflection...');
+      // Trigger reflection endpoint directly by requiring it
+      try {
+        const reflectHandler = require('../reflect');
+        await new Promise((resolve) => {
+          const fakeReq = { query: { force: 'true' } };
+          const fakeRes = {
+            status: () => fakeRes,
+            json: (body) => { fakeRes._body = body; resolve(body); return fakeRes; },
+            send: () => resolve(),
+          };
+          reflectHandler(fakeReq, fakeRes).catch(resolve);
+        });
+      } catch (err) {
+        await bot.sendMessage(chatId, `\u{274C} Reflection trigger failed: ${err.message}`);
+        return res.status(200).send('OK');
+      }
+    }
+    const latest = await redis.zrevrange('remy_reflections', 0, 0);
+    if (!latest.length) {
+      await bot.sendMessage(chatId, '\u{1F4AD} No reflections yet. They generate nightly; run `/reflect force` to create one now.', { parse_mode: 'Markdown' });
+      return res.status(200).send('OK');
+    }
+    try {
+      const r = JSON.parse(latest[0]);
+      const parts = [`\u{1F4AD} *Reflection \u{2014} ${r.date}*\n`];
+      if (r.summary) parts.push(`_${r.summary}_\n`);
+      if (r.mood) parts.push(`*Mood:* ${r.mood}`);
+      if (r.themes?.length) parts.push(`*Themes:*\n${r.themes.map(t => `\u{2022} ${t}`).join('\n')}`);
+      if (r.key_facts?.length) parts.push(`*Key facts:*\n${r.key_facts.map(f => `\u{2022} ${f}`).join('\n')}`);
+      if (r.open_loops?.length) parts.push(`*Open loops:*\n${r.open_loops.map(l => `\u{2022} ${l}`).join('\n')}`);
+      await safeSend(chatId, parts.join('\n\n'));
+    } catch (err) {
+      await bot.sendMessage(chatId, `\u{26A0}\u{FE0F} Reflection corrupted: ${err.message}`);
+    }
+    return res.status(200).send('OK');
+  }
+
   // /debug — show last turn's trace (model, tools, cache, timings)
   if (text === '/debug') {
     const raw = await redis.get(KEYS.DEBUG_LAST(chatId));
@@ -606,6 +648,7 @@ async function handleCommand(message, chatId, text, res) {
       `*Info*\n` +
       `\`/stats\` \u{2014} usage stats\n` +
       `\`/debug\` \u{2014} inspect last turn (model, tools, cache, timings)\n` +
+      `\`/reflect\` \u{2014} view latest nightly reflection (\`/reflect force\` to regenerate)\n` +
       `\`/timezone <tz>\` \u{2014} set your timezone (e.g. America/New_York)\n` +
       `\`/timezone\` \u{2014} view current timezone\n\n` +
       `*Training*\n` +
