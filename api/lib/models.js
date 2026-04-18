@@ -8,8 +8,11 @@ let FALLBACK_MODEL = null;
 let MEMORY_MODEL = null;
 if (process.env.ANTHROPIC_API_KEY) {
   const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic('claude-3-haiku-20240307');
-  MEMORY_MODEL = anthropic('claude-3-haiku-20240307');
+  const chatModel = process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6';
+  const fastModel = process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5';
+  FALLBACK_MODEL = anthropic(chatModel);
+  MEMORY_MODEL = anthropic(fastModel);
+  console.log(`[INIT] Anthropic models — chat: ${chatModel}, memory: ${fastModel}`);
 }
 
 // ── Model routing — picks primary/secondary based on query ────────────────────
@@ -19,9 +22,9 @@ function pickModels(prompt, hasWebSearch) {
   const useSonnet = FALLBACK_MODEL && (hasWebSearch || (SONNET_TRIGGERS.test(prompt) && prompt.length > 40));
   return {
     primary:       useSonnet ? FALLBACK_MODEL : CHAT_MODEL,
-    primaryName:   useSonnet ? 'Haiku' : 'GLM-4-Plus',
+    primaryName:   useSonnet ? 'Anthropic' : 'GLM-4-Plus',
     secondary:     useSonnet ? CHAT_MODEL : FALLBACK_MODEL,
-    secondaryName: useSonnet ? 'GLM-4-Plus' : 'Haiku',
+    secondaryName: useSonnet ? 'GLM-4-Plus' : 'Anthropic',
   };
 }
 

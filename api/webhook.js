@@ -41,9 +41,9 @@ module.exports = async (req, res) => {
     const isBoss     = senderId === BOSS_ID;
     const rawText    = message.text || '';
     // Strip @BotUsername suffix from commands
-    const botUser = BOT_USERNAME.replace(/[.*+?^${}()|[\]\]/g, '\$&');
+    const botUser = BOT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const text = rawText.startsWith('/')
-      ? rawText.replace(new RegExp('(^/\w+)' + botUser, 'i'), '$1').trim()
+      ? rawText.replace(new RegExp('(^/\\w+)' + botUser, 'i'), '$1').trim()
       : rawText;
 
     console.log(`[MSG] from=${senderName}(${senderId}) chat=${chatId} private=${isPrivate} isBoss=${isBoss} text="${text.slice(0,50)}"`);

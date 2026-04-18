@@ -1,13 +1,15 @@
-const { bot, safeSend, BOT_USERNAME, BOSS_ID } = require('../lib/telegram');
+const { bot, safeSend, BOT_USERNAME, BOSS_ID, BOSS_NAME } = require('../lib/telegram');
 const { redis, KEYS, MAX_HIST_MSGS, MAX_LOG_ENTRIES, MIN_MEMORY_LEN } = require('../lib/redis');
 const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, pickModels } = require('../lib/models');
 const { parseCronNL, parseReminderTime, localTimeToUTC, getBossTimezone } = require('../lib/time');
 const { buildContextMemory, getHistory, buildSystemPrompt } = require('../middleware/context');
-const { needsWebSearch, searchWebTool } = require('../tools/search');
+const { needsWebSearch, searchWebTool, imageSearch, detectVisualRequest } = require('../tools/search');
 const { setReminderTool, listRemindersTool } = require('../tools/reminder');
 const { createScheduleTool, editScheduleTool, deleteScheduleTool, listSchedulesTool } = require('../tools/schedule');
 const { saveMemoryTool, recallMemoryTool } = require('../tools/memory-tool');
 const { planGoalTool } = require('../tools/plan');
+const { detectElectricalCalc, formatElectricalResult } = require('../tools/electrical');
+const { handleVoiceRouting } = require('./voice');
 const memory = require('../memory');
 
 // ── Heuristics ───────────────────────────────────────────────────────────────
@@ -92,6 +94,96 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   const taggedPrompt = !isPrivate ? `[${senderName}]: ${rawPrompt}` : rawPrompt;
   const timezone = await getBossTimezone(redis, KEYS.TIMEZONE);
 
+  // ── Voice smart routing (Boss DMs only — reminder/expense/pin from voice) ──
+  if (voiceTranscript && isBoss && isPrivate) {
+    const handled = await handleVoiceRouting(voiceTranscript, chatId);
+    if (handled) return res.status(200).send('OK');
+  }
+
+  // ── Electrical quick tools (instant, no AI call) ───────────────────────────
+  if (isBoss && !isPhoto) {
+    const elecCalc = detectElectricalCalc(rawPrompt);
+    if (elecCalc) {
+      const result = formatElectricalResult(elecCalc);
+      if (result) {
+        await bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      }
+    }
+  }
+
+  // ── Quick expense/material logging ─────────────────────────────────────────
+  if (isBoss && !isPhoto) {
+    const expenseMatch = rawPrompt.match(/(?:spent|bought|purchased|paid|picked up|grabbed)\s+\$?([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i)
+      || rawPrompt.match(/\$([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i);
+    if (expenseMatch) {
+      const amount = expenseMatch[1].replace(',', '');
+      const vendor = expenseMatch[2].trim().replace(/[.,]+$/, '');
+      const jobName = expenseMatch[3]?.trim().replace(/[.,]+$/, '') || 'general';
+      const logEntry = `$${amount} at ${vendor} for ${jobName} (${new Date().toLocaleDateString('en-US')})`;
+      try {
+        await memory.addMemory(logEntry, 'work_projects', 70);
+        await bot.sendMessage(chatId, `\u{1F4B0} *Logged:* $${amount} at ${vendor}\n\u{1F4C1} Job: ${jobName}\n\n_Ask "expenses for ${jobName}" to see totals._`, { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      } catch (err) { console.error('[EXPENSE] Failed to log:', err.message); }
+    }
+  }
+
+  // ── "Summarize today" / daily recap ────────────────────────────────────────
+  if (isBoss && isPrivate && !isPhoto) {
+    const todayMatch = /^(?:summarize|recap|summary of|what did (?:we|i|you)\s+(?:talk|discuss|cover|do|say)|what happened|debrief me on)\s+today/i.test(rawPrompt)
+      || /^(?:today'?s?\s+(?:summary|recap|debrief))/i.test(rawPrompt);
+    if (todayMatch) {
+      const todayISO = new Date().toISOString().split('T')[0];
+      const entries = await redis.lrange(KEYS.RAW_LOG, 0, 99);
+      const todayEntries = entries.filter(e => {
+        try { return JSON.parse(e).ts?.startsWith(todayISO); } catch { return false; }
+      });
+      if (!todayEntries.length) {
+        await bot.sendMessage(chatId, '\u{1F4CB} Nothing logged today yet.');
+        return res.status(200).send('OK');
+      }
+      await bot.sendMessage(chatId, `\u{1F504} Summarizing ${todayEntries.length} exchanges from today...`);
+      try {
+        const logText = todayEntries.reverse().flatMap(e => {
+          try {
+            const { ts, sender, msg, reply } = JSON.parse(e);
+            return [`[${ts.split('T')[1]?.slice(0,5)}] ${sender}: "${msg.slice(0, 150)}" \u{2192} Remy: "${reply.slice(0, 150)}"`];
+          } catch { return []; }
+        }).join('\n');
+        const { text: summary } = await generateText({
+          model: CHAT_MODEL,
+          prompt: `Summarize today's conversation between ${BOSS_NAME} and Remy. Pull out key topics, decisions, action items, and anything important. Be concise but complete:\n\n${logText}`,
+          maxTokens: 800,
+        });
+        const todayStr = new Date().toLocaleDateString('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+        await safeSend(chatId, `\u{1F4CB} *Today's Recap (${todayStr}):*\n\n${summary}`);
+      } catch (err) {
+        console.error('[SUMMARIZE] Today failed:', err.message);
+        await bot.sendMessage(chatId, '\u{274C} Summary failed. Try again.');
+      }
+      return res.status(200).send('OK');
+    }
+  }
+
+  // ── Quick pin detection: "pin: Smith job is at 4521 NW 7th St" ─────────────
+  if (isBoss && !isPhoto) {
+    const pinMatch = rawPrompt.match(/^pin\s*[:\-]\s*(.+)$/i);
+    if (pinMatch && pinMatch[1].length >= 5) {
+      const pinContent = pinMatch[1].trim();
+      const lower = pinContent.toLowerCase();
+      let category = 'personal_preferences';
+      if (/\b(job|project|site|contract|client|permit|inspection|wire|panel|conduit)\b/i.test(lower)) category = 'work_projects';
+      else if (/\b(address|phone|email|number|contact)\b/i.test(lower)) category = 'contacts';
+      else if (/\b(kid|child|son|daughter|wife|family|school|pickup)\b/i.test(lower)) category = 'family_relationships';
+      try {
+        await memory.addMemory(pinContent, category, 95, true);
+        await bot.sendMessage(chatId, `\u{1F4CC} *Pinned* (${category}): "${pinContent.slice(0, 80)}"`, { parse_mode: 'Markdown' });
+        return res.status(200).send('OK');
+      } catch (err) { console.error('[PIN] Failed:', err.message); }
+    }
+  }
+
   // ── Natural language schedule detection (Boss DMs only — no AI call needed) ──
   if (isBoss && isPrivate && !isPhoto) {
     const cronNL = parseCronNL(rawPrompt);
@@ -121,9 +213,9 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
 
   // ── Natural language reminder detection (Boss DMs only, no AI call) ──
   if (isBoss && isPrivate && !isPhoto) {
-    const reminderMatch = rawPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(in\s+\d+\s*(?:m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?.+)$/i);
+    const reminderMatch = rawPrompt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(.+)$/i);
     if (reminderMatch) {
-      const parsed = parseReminderTime(reminderMatch[1]);
+      const parsed = parseReminderTime(reminderMatch[1], timezone);
       if (parsed) {
         await redis.zadd(KEYS.REMINDERS, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
         const timeStr = new Date(parsed.ts).toLocaleString('en-US', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
@@ -159,10 +251,14 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   }
 
   // ── Fetch context in parallel ──────────────────────────────────────────────
-  const [contextMemory, history, searchResults] = await Promise.all([
+  const visualReq = !isPhoto ? detectVisualRequest(rawPrompt) : null;
+  const [contextMemory, history, searchResults, visualResult] = await Promise.all([
     buildContextMemory(rawPrompt),
     getHistory(chatId),
     (!isPhoto && needsWebSearch(rawPrompt)) ? webSearch(rawPrompt) : Promise.resolve(null),
+    visualReq?.type === 'image' ? imageSearch(visualReq.query) :
+      visualReq?.type === 'map' ? Promise.resolve({ type: 'map', query: visualReq.query }) :
+      Promise.resolve(null),
   ]);
 
   // ── Build system prompt ────────────────────────────────────────────────────
@@ -259,6 +355,29 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
 
   // ── Send response ──────────────────────────────────────────────────────────
   await safeSend(chatId, aiResponse);
+
+  // ── Send visual content (image or map) if requested ────────────────────────
+  if (visualResult) {
+    try {
+      if (visualResult.type === 'map') {
+        const mapQuery = encodeURIComponent(visualResult.query);
+        await bot.sendMessage(chatId, `\u{1F4CD} https://www.google.com/maps/search/${mapQuery}`, { disable_web_page_preview: false });
+        console.log(`[VISUAL] Sent map link for: ${visualResult.query}`);
+      } else if (visualResult.url) {
+        try {
+          await bot.sendPhoto(chatId, visualResult.url, {
+            caption: visualResult.title ? `\u{1F4F7} ${visualResult.title}` : undefined,
+          });
+          console.log(`[VISUAL] Sent image for: ${visualReq.query}`);
+        } catch (photoErr) {
+          console.error('[VISUAL] sendPhoto failed, sending link:', photoErr.message);
+          await bot.sendMessage(chatId, `\u{1F4F7} ${visualResult.url}`);
+        }
+      }
+    } catch (err) {
+      console.error('[VISUAL] Failed to send visual:', err.message);
+    }
+  }
 
   // ── Save history + log (awaited — fast Redis ops) ──────────────────────────
   const histKey     = KEYS.HISTORY(chatId);

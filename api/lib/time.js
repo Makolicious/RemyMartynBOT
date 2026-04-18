@@ -1,14 +1,78 @@
 // ── Time parsing and timezone utilities ───────────────────────────────────────
 
-// Parse "in 2h to call John" format
-function parseReminderTime(text) {
-  const match = text.match(/^in\s+(\d+)\s*(m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?(.+)$/i);
-  if (!match) return null;
-  const amount = parseInt(match[1]);
-  const unit   = match[2][0].toLowerCase();
-  const msg    = match[3].trim();
-  const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
-  return { ts: Date.now() + amount * ms, message: msg };
+// Parse natural language reminder time — supports many formats:
+// "in 2h to call John", "tomorrow at 9am to check permits", "friday at 3pm pick up materials",
+// "at 3:30pm call inspector", "next monday at 8am review plans", "tonight at 9pm call family"
+function parseReminderTime(text, timezone) {
+  const tz = timezone || process.env.BOSS_TIMEZONE || 'America/New_York';
+  const now = new Date();
+  const localNow = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+
+  // "in 2h to call John" — relative time
+  const relMatch = text.match(/^in\s+(\d+)\s*(m(?:in(?:s|utes?)?)?|h(?:r?s?|ours?)?|d(?:ays?)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (relMatch) {
+    const amount = parseInt(relMatch[1]);
+    const unit   = relMatch[2][0].toLowerCase();
+    const msg    = relMatch[3].trim();
+    const ms     = { m: 60000, h: 3600000, d: 86400000 }[unit] || 60000;
+    return { ts: Date.now() + amount * ms, message: msg };
+  }
+
+  // Helper: resolve a time string to a UTC timestamp for a given local date
+  function resolveTime(timeStr, targetDate) {
+    const parsed = parseTimeStr(timeStr);
+    if (!parsed) return null;
+    const [h, m] = parsed.split(':').map(Number);
+    const d = new Date(targetDate);
+    d.setHours(h, m, 0, 0);
+    const utcStr = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const localStr = new Date(now.toLocaleString('en-US', { timeZone: tz }));
+    const offsetMs = utcStr.getTime() - localStr.getTime();
+    return d.getTime() + offsetMs;
+  }
+
+  const dayNames = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+
+  // "tomorrow at 9am to check permits"
+  const tomorrowMatch = text.match(/^tomorrow\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (tomorrowMatch) {
+    const tomorrow = new Date(localNow);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const ts = resolveTime(tomorrowMatch[1].trim(), tomorrow);
+    if (ts) return { ts, message: tomorrowMatch[2].trim() };
+  }
+
+  // "tonight at 9pm call family" / "today at 3pm do X"
+  const todayMatch = text.match(/^(?:today|tonight)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (todayMatch) {
+    const ts = resolveTime(todayMatch[1].trim(), localNow);
+    if (ts) return { ts, message: todayMatch[2].trim() };
+  }
+
+  // "friday at 3pm pick up materials" / "next monday at 8am review plans"
+  const dayMatch = text.match(/^(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (dayMatch) {
+    const targetDay = dayNames[dayMatch[1].toLowerCase()];
+    if (targetDay !== undefined) {
+      const target = new Date(localNow);
+      const currentDay = localNow.getDay();
+      let daysAhead = targetDay - currentDay;
+      if (daysAhead <= 0) daysAhead += 7;
+      target.setDate(target.getDate() + daysAhead);
+      const ts = resolveTime(dayMatch[2].trim(), target);
+      if (ts) return { ts, message: dayMatch[3].trim() };
+    }
+  }
+
+  // "at 3:30pm call inspector" — today, or tomorrow if time already passed
+  const atMatch = text.match(/^at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+(?:to\s+|about\s+)?(.+)$/i);
+  if (atMatch) {
+    let ts = resolveTime(atMatch[1].trim(), localNow);
+    if (ts && ts <= Date.now()) ts += 86400000;
+    if (ts) return { ts, message: atMatch[2].trim() };
+  }
+
+  return null;
 }
 
 // Convert local time string (HH:MM) in a given timezone to UTC (HH:MM)

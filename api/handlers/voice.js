@@ -1,11 +1,14 @@
 const { bot } = require('../lib/telegram');
+const { redis, KEYS } = require('../lib/redis');
+const { parseReminderTime, getBossTimezone } = require('../lib/time');
+const memory = require('../memory');
 
 // ── Voice message handler — transcribe via Groq Whisper ──────────────────────
 // Returns the transcript string, or null if transcription failed (with user notified)
 async function handleVoice(message, chatId) {
   const groqKey = process.env.GROQ_API_KEY;
   if (!groqKey) {
-    await bot.sendMessage(chatId, "Voice message received \u{2014} can't listen in just yet. Type it out for me.");
+    await bot.sendMessage(chatId, "Voice isn't configured yet \u{2014} GROQ_API_KEY is missing. Type it out for now, Boss.");
     return null;
   }
 
@@ -40,4 +43,49 @@ async function handleVoice(message, chatId) {
   }
 }
 
-module.exports = { handleVoice };
+// ── Voice smart routing: check if voice note is a reminder, expense, or pin ──
+// Returns true if handled (caller should return), false to continue to AI chat
+async function handleVoiceRouting(voiceTranscript, chatId) {
+  const vt = voiceTranscript;
+
+  // Check for reminder in voice
+  const voiceReminderMatch = vt.match(/^(?:remind\s+me|set\s+a?\s*reminder|reminder)\s+(.+)$/i);
+  if (voiceReminderMatch) {
+    const tz = await getBossTimezone(redis, KEYS.TIMEZONE);
+    const parsed = parseReminderTime(voiceReminderMatch[1], tz);
+    if (parsed) {
+      await redis.zadd(KEYS.REMINDERS, parsed.ts, JSON.stringify({ chatId, message: parsed.message, id: Date.now() }));
+      const timeStr = new Date(parsed.ts).toLocaleString('en-US', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+      await bot.sendMessage(chatId, `\u{1F399}\u{FE0F} \u{23F0} Voice reminder set for *${timeStr}*: "${parsed.message}"`, { parse_mode: 'Markdown' });
+      return true;
+    }
+  }
+
+  // Check for expense in voice
+  const voiceExpense = vt.match(/(?:spent|bought|purchased|paid|picked up)\s+\$?([\d,.]+)\s+(?:at|from|on)\s+(.+?)(?:\s+for\s+(?:the\s+)?(.+?))?$/i);
+  if (voiceExpense) {
+    const amount = voiceExpense[1].replace(',', '');
+    const vendor = voiceExpense[2].trim().replace(/[.,]+$/, '');
+    const jobName = voiceExpense[3]?.trim().replace(/[.,]+$/, '') || 'general';
+    const logEntry = `$${amount} at ${vendor} for ${jobName} (${new Date().toLocaleDateString('en-US')})`;
+    try {
+      await memory.addMemory(logEntry, 'work_projects', 70);
+      await bot.sendMessage(chatId, `\u{1F399}\u{FE0F} \u{1F4B0} *Logged:* $${amount} at ${vendor}\n\u{1F4C1} Job: ${jobName}`, { parse_mode: 'Markdown' });
+      return true;
+    } catch (err) { console.error('[VOICE] Expense log failed:', err.message); }
+  }
+
+  // Check for pin in voice
+  const voicePin = vt.match(/^(?:pin|save|note)\s*[:\-]?\s*(.+)$/i);
+  if (voicePin && voicePin[1].length > 10) {
+    try {
+      await memory.addMemory(voicePin[1].trim(), 'personal_preferences', 90, true);
+      await bot.sendMessage(chatId, `\u{1F399}\u{FE0F} \u{1F4CC} *Pinned:* "${voicePin[1].trim().slice(0, 80)}"`, { parse_mode: 'Markdown' });
+      return true;
+    } catch (err) { console.error('[VOICE] Pin failed:', err.message); }
+  }
+
+  return false;
+}
+
+module.exports = { handleVoice, handleVoiceRouting };

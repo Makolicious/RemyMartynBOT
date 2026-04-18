@@ -154,6 +154,28 @@ async function handleCommand(message, chatId, text, res) {
     return res.status(200).send('OK');
   }
 
+  // /pin <content> — save permanent memory, auto-categorized
+  if (text.startsWith('/pin ')) {
+    const pinContent = text.slice(5).trim();
+    if (!pinContent || pinContent.length < 5) {
+      await bot.sendMessage(chatId, '\u{26A0}\u{FE0F} Usage: `/pin Smith job address is 4521 NW 7th St`', { parse_mode: 'Markdown' });
+      return res.status(200).send('OK');
+    }
+    const lower = pinContent.toLowerCase();
+    let category = 'personal_preferences';
+    if (/\b(job|project|site|contract|client|permit|inspection|wire|panel|conduit)\b/i.test(lower)) category = 'work_projects';
+    else if (/\b(address|phone|email|number|contact)\b/i.test(lower)) category = 'contacts';
+    else if (/\b(kid|child|son|daughter|wife|family|school|pickup)\b/i.test(lower)) category = 'family_relationships';
+    else if (/\b(password|login|account|pin code|ssn|license)\b/i.test(lower)) category = 'sensitive_personal';
+    try {
+      await memory.addMemory(pinContent, category, 95, true);
+      await bot.sendMessage(chatId, `\u{1F4CC} *Pinned* (${category}): "${pinContent.slice(0, 80)}"`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await bot.sendMessage(chatId, `\u{274C} Pin failed: ${err.message}`);
+    }
+    return res.status(200).send('OK');
+  }
+
   // /memadd <content> <category>
   if (text.startsWith('/memadd ')) {
     const args = text.slice(8).trim();
@@ -295,13 +317,14 @@ async function handleCommand(message, chatId, text, res) {
     return res.status(200).send('OK');
   }
 
-  // /remind in <time> to <message>
+  // /remind — supports many time formats
   if (text.startsWith('/remind ')) {
     const input  = text.slice(8).trim();
-    const parsed = parseReminderTime(input);
+    const remindTz = await getBossTimezone(redis, KEYS.TIMEZONE);
+    const parsed = parseReminderTime(input, remindTz);
     if (!parsed) {
       await bot.sendMessage(chatId,
-        `\u{26A0}\u{FE0F} Format: \`/remind in 2h to call John\` or \`/remind in 30m check email\``,
+        `\u{26A0}\u{FE0F} Formats:\n\`/remind in 2h to call John\`\n\`/remind tomorrow at 9am check permits\`\n\`/remind friday at 3pm pick up materials\`\n\`/remind at 5pm call inspector\``,
         { parse_mode: 'Markdown' }
       );
       return res.status(200).send('OK');
