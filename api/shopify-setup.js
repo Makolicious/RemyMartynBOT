@@ -44,18 +44,8 @@ async function registerWebhook(topic) {
       let data = '';
       res.on('data', chunk => (data += chunk));
       res.on('end', () => {
-        try {
-          const response = JSON.parse(data);
-          if (response.data?.webhookSubscriptionCreate?.userErrors?.length > 0) {
-            reject(new Error(`${response.data.webhookSubscriptionCreate.userErrors[0].message}`));
-          } else if (response.errors) {
-            reject(new Error(`${response.errors[0].message}`));
-          } else {
-            resolve(response);
-          }
-        } catch (e) {
-          reject(new Error(`Parse error: ${e.message}`));
-        }
+        // Return raw response so we can debug
+        resolve({ status: res.statusCode, body: data });
       });
     });
 
@@ -80,10 +70,10 @@ module.exports = async (req, res) => {
 
   for (const topic of topics) {
     try {
-      await registerWebhook(topic);
-      results[topic] = '✓ registered';
+      const r = await registerWebhook(topic);
+      results[topic] = r;
     } catch (err) {
-      results[topic] = `✗ ${err.message}`;
+      results[topic] = `✗ ${err.message || JSON.stringify(err)}`;
     }
   }
 
