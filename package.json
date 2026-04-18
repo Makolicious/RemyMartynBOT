@@ -4,6 +4,9 @@
   "description": "Remy Martyn — personal Telegram AI assistant",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "eval": "node scripts/eval.js",
+    "eval:voice": "node scripts/eval.js voice identity honesty",
+    "eval:verbose": "VERBOSE=1 node scripts/eval.js",
     "vercel-build": "echo 'Build complete'"
   },
   "keywords": [],
