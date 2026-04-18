@@ -137,18 +137,66 @@ async function buildContextMemory(currentMessage) {
   }
 }
 
+// ── Lightweight topic-relevance scorer ────────────────────────────────────────
+// Pure in-memory keyword overlap — no API calls, runs every turn. Used by
+// getHistory to identify older history entries on the same topic as the
+// current message, so those stay full-length instead of getting truncated.
+// Phase 4b: topic threads in history.
+const STOPWORDS = new Set([
+  'the','a','an','to','of','and','or','but','in','on','at','is','are','was','were',
+  'be','been','being','have','has','had','do','does','did','will','would','could',
+  'should','may','might','can','shall','i','you','he','she','it','we','they','me',
+  'him','her','us','them','my','your','his','hers','its','our','their','this','that',
+  'these','those','yo','ok','okay','yes','no','for','with','from','about','into','over',
+  'under','one','two','out','not','just','like','then','than','also','some','any','what',
+  'when','where','why','how','who','now','get','got','put','see','know','think','way',
+  'back','make','made','need','want','boss','remy','bro','man','dude','hey','mako',
+  'going','gonna','really','still','even','take','took','look','said','say','says'
+]);
+function tokenize(s) {
+  return (s || '').toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !STOPWORDS.has(w));
+}
+function pickTopicRelevantIndices(olderHistory, currentMessage, maxKeep = 2, minOverlap = 2) {
+  if (!currentMessage || typeof currentMessage !== 'string') return new Set();
+  const currentSet = new Set(tokenize(currentMessage));
+  if (currentSet.size === 0) return new Set();
+  const scored = olderHistory
+    .map((h, i) => {
+      const tokens = tokenize(h?.content);
+      let overlap = 0;
+      for (const t of tokens) if (currentSet.has(t)) overlap++;
+      return { i, overlap };
+    })
+    .filter(x => x.overlap >= minOverlap);
+  scored.sort((a, b) => b.overlap - a.overlap);
+  return new Set(scored.slice(0, maxKeep).map(x => x.i));
+}
+
 // ── Fetch and compress chat history ───────────────────────────────────────────
-async function getHistory(chatId) {
+async function getHistory(chatId, currentMessage = '') {
   const rawHistory = await redis.lrange(KEYS.HISTORY(chatId), 0, MAX_HIST_MSGS - 1).catch(() => []);
   const history = rawHistory.flatMap(e => {
     try { return [JSON.parse(e)]; }
     catch { return []; }
   }).reverse();
 
-  // Compress older history
   const FULL_HISTORY_TAIL = 4;
   const TRUNCATE_LEN = 120;
-  for (let i = 0; i < history.length - FULL_HISTORY_TAIL; i++) {
+  const cutoff = history.length - FULL_HISTORY_TAIL;
+
+  // Phase 4b: before truncating older messages, look for ones on the same
+  // topic as the current turn (cheap keyword overlap) and keep those full.
+  // This preserves real context when the Boss loops back to an earlier
+  // thread mid-session, without the cost of embedding every history entry.
+  const keepFull = cutoff > 0
+    ? pickTopicRelevantIndices(history.slice(0, cutoff), currentMessage, 2, 2)
+    : new Set();
+
+  for (let i = 0; i < cutoff; i++) {
+    if (keepFull.has(i)) continue;  // topic-relevant — leave full-length
     if (history[i].content && history[i].content.length > TRUNCATE_LEN) {
       history[i] = { ...history[i], content: history[i].content.slice(0, TRUNCATE_LEN) + '...' };
     }
@@ -332,4 +380,4 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
   }
 }
 
-module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext, gateMemoriesByRelevance, expandOneHop };
+module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext, gateMemoriesByRelevance, expandOneHop, pickTopicRelevantIndices };

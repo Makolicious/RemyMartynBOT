@@ -255,7 +255,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   const visualReq = !isPhoto ? detectVisualRequest(rawPrompt) : null;
   const [contextMemory, history, searchResults, visualResult] = await Promise.all([
     buildContextMemory(rawPrompt),
-    getHistory(chatId),
+    getHistory(chatId, rawPrompt),
     (!isPhoto && needsWebSearch(rawPrompt)) ? webSearch(rawPrompt) : Promise.resolve(null),
     visualReq?.type === 'image' ? imageSearch(visualReq.query) :
       visualReq?.type === 'map' ? Promise.resolve({ type: 'map', query: visualReq.query }) :
