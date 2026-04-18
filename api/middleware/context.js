@@ -48,6 +48,44 @@ Return ONLY a JSON array of up to ${maxKeep} indices of the memories most likely
   }
 }
 
+// ── One-hop graph walk ────────────────────────────────────────────────────────
+// For each semantic-hit memory (a "seed"), peek at its related_ids and pull in
+// a small number of closely-linked memories the direct similarity search missed
+// — e.g. a project name that never appears in the Boss's message but is one
+// step away from a memory that did match.
+//
+// The graph is populated by linkRelatedMemories in api/memory/index.js when
+// new memories are added (Phase 3c). Pre-Phase-3c memories simply have an
+// empty related_ids array, so this is a clean no-op for them.
+async function expandOneHop(seeds, excludeIds, maxNeighbors = 3) {
+  if (!Array.isArray(seeds) || seeds.length === 0) return [];
+  const seen = new Set(excludeIds || []);
+  const candidateIds = [];
+  for (const seed of seeds) {
+    const rel = Array.isArray(seed?.related_ids) ? seed.related_ids : [];
+    for (const rid of rel) {
+      if (!rid || seen.has(rid)) continue;
+      seen.add(rid);
+      candidateIds.push(rid);
+      // Pull up to 3x the final cap as candidates — cheap since they're all
+      // Redis HGETs and some may come back null (deleted mid-flight).
+      if (candidateIds.length >= maxNeighbors * 3) break;
+    }
+    if (candidateIds.length >= maxNeighbors * 3) break;
+  }
+  if (candidateIds.length === 0) return [];
+
+  try {
+    const fetched = await Promise.all(
+      candidateIds.map(id => memory.getMemory(id, false).catch(() => null))
+    );
+    return fetched.filter(Boolean).slice(0, maxNeighbors);
+  } catch (err) {
+    console.warn('[MEMORY] expandOneHop failed:', err.message);
+    return [];
+  }
+}
+
 // ── Build memory context for AI prompt ────────────────────────────────────────
 async function buildContextMemory(currentMessage) {
   const MAX_CHARS = 2000;
@@ -68,8 +106,17 @@ async function buildContextMemory(currentMessage) {
     // LLM-gate the semantic hits — permanent memories always pass through
     const extraMemories = await gateMemoriesByRelevance(rawExtras, currentMessage, 4);
 
+    // Phase 4a: one-hop graph walk. Semantic hits surface direct matches;
+    // their related_ids surface the connective tissue (shared project, same
+    // person, adjacent topic) that pure cosine similarity can miss.
+    const alreadyIncluded = new Set([
+      ...permanentIds,
+      ...extraMemories.map(m => m.id),
+    ]);
+    const hopNeighbors = await expandOneHop(extraMemories, alreadyIncluded, 3);
+
     const grouped = {};
-    for (const mem of [...permanentMemories, ...extraMemories]) {
+    for (const mem of [...permanentMemories, ...extraMemories, ...hopNeighbors]) {
       if (!grouped[mem.category]) grouped[mem.category] = [];
       grouped[mem.category].push(mem.content);
     }
@@ -285,4 +332,4 @@ YOUR NAME: You chose the name "Remy" yourself. During your earliest conversation
   }
 }
 
-module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext, gateMemoriesByRelevance };
+module.exports = { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext, gateMemoriesByRelevance, expandOneHop };
