@@ -4,7 +4,7 @@ const memory = require('../memory');
 // ── Save a fact to memory ─────────────────────────────────────────────────────
 const saveMemoryTool = {
   description: 'Save an important fact about the user to long-term memory. Use when the user shares personal info, preferences, decisions, goals, contacts, or anything worth remembering for future conversations.',
-  parameters: z.object({
+  inputSchema: z.object({
     fact: z.string().describe('The fact to remember, as a concise statement'),
     category: z.string().describe(`Category: one of ${memory.CATEGORIES.join(', ')}`),
   }),
@@ -21,7 +21,7 @@ const saveMemoryTool = {
 // ── Search memory for relevant facts ──────────────────────────────────────────
 const recallMemoryTool = {
   description: 'Search your memory for facts about the user. Use when you need context about their preferences, projects, contacts, or past decisions.',
-  parameters: z.object({
+  inputSchema: z.object({
     query: z.string().describe('What to search for in memory'),
   }),
   execute: async ({ query }) => {

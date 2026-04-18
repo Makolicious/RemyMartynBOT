@@ -1,6 +1,7 @@
 const { bot, safeSend, BOT_USERNAME, BOSS_ID, BOSS_NAME } = require('../lib/telegram');
 const { redis, KEYS, MAX_HIST_MSGS, MAX_LOG_ENTRIES, MIN_MEMORY_LEN } = require('../lib/redis');
 const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, pickModels } = require('../lib/models');
+const { stepCountIs } = require('ai');
 const { parseCronNL, parseReminderTime, localTimeToUTC, getBossTimezone } = require('../lib/time');
 const { buildContextMemory, getHistory, buildSystemPrompt } = require('../middleware/context');
 const { needsWebSearch, searchWebTool, imageSearch, detectVisualRequest } = require('../tools/search');
@@ -62,7 +63,7 @@ function buildTools(chatId, timezone) {
   function wrap(tool) {
     return {
       description: tool.description,
-      parameters: tool.parameters,
+      inputSchema: tool.inputSchema,
       execute: (args) => tool.execute(args, { chatId, timezone }),
     };
   }
@@ -310,7 +311,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
         system: systemPrompt,
         messages: aiMessages,
         tools,
-        maxSteps: 5,  // allow up to 5 tool calls per turn
+        stopWhen: stepCountIs(5),  // allow up to 5 tool calls per turn
         abortSignal: abortController.signal,
       });
       // result.text can be empty if the last step was a tool call with no follow-up text

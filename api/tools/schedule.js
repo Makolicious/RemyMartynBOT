@@ -6,7 +6,7 @@ const { needsWebSearch } = require('./search');
 // ── Create a recurring scheduled task ─────────────────────────────────────────
 const createScheduleTool = {
   description: 'Create a recurring scheduled task. Use when the user wants something done daily, on weekdays, weekly, or monthly. Always confirm the details first.',
-  parameters: z.object({
+  inputSchema: z.object({
     task: z.string().describe('What the task should do'),
     repeat: z.enum(['daily', 'weekdays', 'weekly', 'monthly']).describe('How often'),
     time: z.string().describe('Time in HH:MM format (user local time)'),
@@ -37,7 +37,7 @@ const createScheduleTool = {
 // ── Edit a recurring scheduled task ───────────────────────────────────────────
 const editScheduleTool = {
   description: 'Edit an existing recurring scheduled task by its number. Use when the user wants to change the time, frequency, or description of a task.',
-  parameters: z.object({
+  inputSchema: z.object({
     number: z.number().describe('The task number from the schedule list'),
     task: z.string().optional().describe('New task description'),
     repeat: z.enum(['daily', 'weekdays', 'weekly', 'monthly']).optional().describe('New frequency'),
@@ -73,7 +73,7 @@ const editScheduleTool = {
 // ── Delete a recurring scheduled task ─────────────────────────────────────────
 const deleteScheduleTool = {
   description: 'Delete a recurring scheduled task by its number. Use when the user wants to remove a task.',
-  parameters: z.object({
+  inputSchema: z.object({
     number: z.number().describe('The task number to delete'),
   }),
   execute: async ({ number }) => {
@@ -91,7 +91,7 @@ const deleteScheduleTool = {
 // ── List all scheduled tasks ──────────────────────────────────────────────────
 const listSchedulesTool = {
   description: 'List all recurring scheduled tasks. Use when the user asks about their schedules, tasks, or cron jobs.',
-  parameters: z.object({}),
+  inputSchema: z.object({}),
   execute: async (_, { timezone }) => {
     const all = await redis.zrangebyscore(KEYS.CRON_JOBS, 0, '+inf', 'WITHSCORES');
     if (!all.length) return { tasks: [], count: 0 };

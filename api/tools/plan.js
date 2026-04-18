@@ -20,7 +20,7 @@ Return ONLY JSON:
 // ── Plan a goal ───────────────────────────────────────────────────────────────
 const planGoalTool = {
   description: 'Create a structured plan to achieve a goal. Use when the user asks you to plan something, break down a task, or create action steps.',
-  parameters: z.object({
+  inputSchema: z.object({
     goal: z.string().describe('The goal to plan for'),
   }),
   execute: async ({ goal }) => {

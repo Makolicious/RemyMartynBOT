@@ -5,7 +5,7 @@ const SERPER_KEY = process.env.SERPER_API_KEY || '';
 // ── Tool definition for AI SDK ────────────────────────────────────────────────
 const searchWebTool = {
   description: 'Search the web for current information. Use when the user asks about news, prices, weather, current events, people, local places (restaurants, shops, services), or anything that needs live data.',
-  parameters: z.object({
+  inputSchema: z.object({
     query: z.string().describe('The search query'),
   }),
   execute: async ({ query }) => {

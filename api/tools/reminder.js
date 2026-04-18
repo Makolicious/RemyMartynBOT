@@ -4,7 +4,7 @@ const { redis, KEYS } = require('../lib/redis');
 // ── Tool definition for AI SDK ────────────────────────────────────────────────
 const setReminderTool = {
   description: 'Set a one-time reminder for the user. Use when they ask to be reminded of something at a specific time. Supports relative times (e.g., "in 2 hours") or absolute timestamps.',
-  parameters: z.object({
+  inputSchema: z.object({
     message: z.string().describe('What to remind about'),
     minutes_from_now: z.number().describe('Minutes from now to fire the reminder. E.g., 120 for "in 2 hours", 1440 for "tomorrow"'),
   }),
@@ -23,7 +23,7 @@ const setReminderTool = {
 // ── Tool to list current reminders ────────────────────────────────────────────
 const listRemindersTool = {
   description: 'List all pending one-time reminders. Use when the user asks to see their reminders.',
-  parameters: z.object({}),
+  inputSchema: z.object({}),
   execute: async (_, { chatId, timezone }) => {
     const all = await redis.zrangebyscore(KEYS.REMINDERS, Date.now(), '+inf', 'WITHSCORES');
     if (!all.length) return { reminders: [], count: 0 };
