@@ -3,7 +3,8 @@
     "api/webhook.js": { "maxDuration": 60 },
     "api/cron.js":    { "maxDuration": 60 },
     "api/admin.js":   { "maxDuration": 30 },
-    "api/shopify-webhook.js": { "maxDuration": 30 }
+    "api/shopify-webhook.js": { "maxDuration": 30 },
+    "api/shopify-setup.js": { "maxDuration": 30 }
   },
   "routes": [
     { "src": "/admin", "dest": "/public/admin.html" },
