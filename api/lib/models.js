@@ -15,16 +15,23 @@ if (process.env.ANTHROPIC_API_KEY) {
   console.log(`[INIT] Anthropic models — chat: ${chatModel}, memory: ${fastModel}`);
 }
 
-// ── Model routing — picks primary/secondary based on query ────────────────────
-const SONNET_TRIGGERS = /\b(write|draft|essay|article|story|poem|script|report|proposal|plan|strategy|roadmap|analyze|analyse|analysis|breakdown|compare|contrast|research|explain|summarize|summarise|translate|code|function|algorithm|debug|refactor|build|create|design|list.*steps|step.by.step|pros.and.cons|in.depth|detailed|thorough|comprehensive|long.form)\b/i;
-
+// ── Model routing — Anthropic is primary for all interactive chat ─────────────
 function pickModels(prompt, hasWebSearch) {
-  const useSonnet = FALLBACK_MODEL && (hasWebSearch || (SONNET_TRIGGERS.test(prompt) && prompt.length > 40));
+  if (FALLBACK_MODEL) {
+    // Anthropic is always primary for interactive chat — reliable tool use
+    return {
+      primary:       FALLBACK_MODEL,
+      primaryName:   'Anthropic',
+      secondary:     CHAT_MODEL,
+      secondaryName: 'GLM-4-Plus',
+    };
+  }
+  // No Anthropic key — GLM only
   return {
-    primary:       useSonnet ? FALLBACK_MODEL : CHAT_MODEL,
-    primaryName:   useSonnet ? 'Anthropic' : 'GLM-4-Plus',
-    secondary:     useSonnet ? CHAT_MODEL : FALLBACK_MODEL,
-    secondaryName: useSonnet ? 'GLM-4-Plus' : 'Anthropic',
+    primary:       CHAT_MODEL,
+    primaryName:   'GLM-4-Plus',
+    secondary:     null,
+    secondaryName: null,
   };
 }
 

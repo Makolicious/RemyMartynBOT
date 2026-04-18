@@ -4,7 +4,7 @@ const SERPER_KEY = process.env.SERPER_API_KEY || '';
 
 // ── Tool definition for AI SDK ────────────────────────────────────────────────
 const searchWebTool = {
-  description: 'Search the web for current information. Use when the user asks about news, prices, weather, current events, people, or anything that needs live data.',
+  description: 'Search the web for current information. Use when the user asks about news, prices, weather, current events, people, local places (restaurants, shops, services), or anything that needs live data.',
   parameters: z.object({
     query: z.string().describe('The search query'),
   }),
@@ -88,7 +88,7 @@ function needsWebSearch(text) {
   if (text.trim().length < 15) return false;
   const conversational = /how are you|what'?s up|what do you think|why not|where were we|what about you|how'?s it going|how come you|what should i|how do you feel|what'?s good|yo+|hey+|sup|hi+|hello/i;
   if (conversational.test(lower)) return false;
-  return /\b(who (is|was|are)|what (is|are|was|were|does)|when (did|is|was|does)|where (is|are|can|do)|how (to|much|many|does|do|did)|why (did|does|is|are|do)|latest|current|today|news|price|weather|stock|rate|score|search|look up|find|tell me about)\b/i.test(text);
+  return /\b(who (is|was|are)|what (is|are|was|were|does)|when (did|is|was|does)|where (is|are|can|do)|how (to|much|many|does|do|did)|why (did|does|is|are|do)|latest|current|today|news|price|weather|stock|rate|score|search|look up|find|tell me about|restaurant|food|eat|places? to eat|spots? to eat|places? near|near me|around me|close by|nearby|look for|looking for)\b/i.test(text);
 }
 
 module.exports = { searchWebTool, needsWebSearch, imageSearch, detectVisualRequest, BLOCKED_VISUAL_PATTERNS };
