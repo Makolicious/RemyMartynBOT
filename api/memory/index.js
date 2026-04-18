@@ -122,6 +122,70 @@ async function semanticSearch(queryText, limit = 10) {
 }
 
 /**
+ * Build the related_ids graph for a newly-added memory.
+ * Finds up to N semantically-similar memories above a similarity threshold
+ * and writes bidirectional links. Bounded so it can't explode.
+ *
+ * Called from addMemory after the new embedding is persisted.
+ */
+async function linkRelatedMemories(newId, newVec, {
+  topK = 5,
+  similarityThreshold = 0.55,
+  maxRelatedPerMemory = 10,
+} = {}) {
+  if (!newVec || !Array.isArray(newVec) || newVec.length === 0) return [];
+  const db = getRedis();
+
+  try {
+    const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
+    if (!allEmbeddings) return [];
+
+    const scored = [];
+    for (const [id, vecJson] of Object.entries(allEmbeddings)) {
+      if (id === newId) continue;  // skip self
+      try {
+        const vec = JSON.parse(vecJson);
+        if (!Array.isArray(vec) || vec.length !== newVec.length) continue;
+        const sim = cosineSimilarity(newVec, vec);
+        if (sim >= similarityThreshold) scored.push({ id, similarity: sim });
+      } catch { /* skip corrupt */ }
+    }
+    scored.sort((a, b) => b.similarity - a.similarity);
+    const picked = scored.slice(0, topK);
+    const relatedIds = picked.map(p => p.id);
+    if (relatedIds.length === 0) return [];
+
+    // Write forward links on the new memory
+    const existing = await db.hget(KEYS.ENTRY(newId), 'related_ids');
+    const currentForward = existing ? safeParseArr(existing) : [];
+    const mergedForward = [...new Set([...currentForward, ...relatedIds])].slice(0, maxRelatedPerMemory);
+    await db.hset(KEYS.ENTRY(newId), 'related_ids', JSON.stringify(mergedForward));
+
+    // Write reverse links on each related memory (capped)
+    for (const rid of relatedIds) {
+      try {
+        const rev = await db.hget(KEYS.ENTRY(rid), 'related_ids');
+        const current = rev ? safeParseArr(rev) : [];
+        if (current.includes(newId)) continue;
+        current.push(newId);
+        // cap reverse list to avoid unbounded growth
+        const trimmed = current.slice(-maxRelatedPerMemory);
+        await db.hset(KEYS.ENTRY(rid), 'related_ids', JSON.stringify(trimmed));
+      } catch { /* best-effort */ }
+    }
+
+    return relatedIds;
+  } catch (err) {
+    console.warn('[MEMORY] linkRelatedMemories failed:', err.message);
+    return [];
+  }
+}
+
+function safeParseArr(s) {
+  try { const x = JSON.parse(s); return Array.isArray(x) ? x : []; } catch { return []; }
+}
+
+/**
  * Backfill embeddings for all existing memories that don't have one yet
  */
 async function backfillEmbeddings() {
@@ -182,10 +246,16 @@ async function addMemory(content, category, confidence = 80, pinned = null) {
   // Add to recent access (as creation)
   await db.zadd(KEYS.ACCESSED, Date.now(), memory.id);
 
-  // Generate and store embedding
+  // Generate and store embedding, then build related_ids graph
   try {
     const vec = await generateEmbedding(`[${memory.category}] ${memory.content}`);
-    if (vec) await db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
+    if (vec) {
+      await db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
+      // Fire-and-forget graph linking — doesn't block memory creation
+      linkRelatedMemories(memory.id, vec).catch(err =>
+        console.warn('[MEMORY] linkRelated failed:', err.message)
+      );
+    }
   } catch (err) {
     console.error('[MEMORY] Embedding failed:', err.message);
   }
@@ -602,6 +672,7 @@ module.exports = {
   searchMemories,
   semanticSearch,
   backfillEmbeddings,
+  linkRelatedMemories,
   updateMemory,
   deleteMemory,
   applyDecay,
