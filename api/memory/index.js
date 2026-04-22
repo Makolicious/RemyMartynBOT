@@ -289,7 +289,7 @@ async function getMemory(id, boost = true) {
     last_accessed: parseInt(data.last_accessed),
     access_count: parseInt(data.access_count),
     decay_rate: parseFloat(data.decay_rate),
-    related_ids: JSON.parse(data.related_ids || '[]'),
+    related_ids: safeParseArr(data.related_ids),
     pinned: data.pinned === 'true' || data.pinned === true  // Parse pinned boolean
   };
 

@@ -97,8 +97,9 @@ async function handleOrderCreate(order, res) {
   } = order;
 
   const customerName = customer?.first_name || 'Guest';
-  const itemCount = line_items.length;
-  const itemNames = line_items.map(item => item.title).join(', ');
+  const items = Array.isArray(line_items) ? line_items : [];
+  const itemCount = items.length;
+  const itemNames = items.map(item => item.title).join(', ');
 
   const message = `📦 New Order #${order_number}\n\n` +
     `Customer: ${customerName}\n` +
