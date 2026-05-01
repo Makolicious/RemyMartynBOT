@@ -255,7 +255,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   const visualReq = !isPhoto ? detectVisualRequest(rawPrompt) : null;
   const [contextMemory, history, searchResults, visualResult] = await Promise.all([
     buildContextMemory(rawPrompt),
-    getHistory(chatId, rawPrompt),
+    getHistory(chatId, rawPrompt, { isBoss, isPrivate }),
     (!isPhoto && needsWebSearch(rawPrompt)) ? webSearch(rawPrompt) : Promise.resolve(null),
     visualReq?.type === 'image' ? imageSearch(visualReq.query) :
       visualReq?.type === 'map' ? Promise.resolve({ type: 'map', query: visualReq.query }) :
@@ -453,15 +453,28 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
     reply:  aiResponse.slice(0, 200),
   });
 
-  await Promise.all([
+  const saveOps = [
+    // Per-chat history: tag user entries so approved users can't see boss messages
     redis.lpush(histKey,
       JSON.stringify({ role: 'assistant', content: aiResponse }),
-      JSON.stringify({ role: 'user',      content: histContent })
+      JSON.stringify({ role: 'user', content: histContent, _isBoss: isBoss })
     ).then(() => redis.ltrim(histKey, 0, MAX_HIST_MSGS - 1)).catch(() => {}),
 
     redis.lpush(KEYS.RAW_LOG, logEntry)
       .then(() => redis.ltrim(KEYS.RAW_LOG, 0, MAX_LOG_ENTRIES - 1)).catch(() => {}),
-  ]);
+  ];
+
+  // Boss: maintain a unified cross-chat history so DM sessions can recall group convos
+  if (isBoss) {
+    saveOps.push(
+      redis.lpush(KEYS.BOSS_HIST,
+        JSON.stringify({ role: 'assistant', content: aiResponse }),
+        JSON.stringify({ role: 'user', content: histContent })
+      ).then(() => redis.ltrim(KEYS.BOSS_HIST, 0, MAX_HIST_MSGS - 1)).catch(() => {})
+    );
+  }
+
+  await Promise.all(saveOps);
 
   // ── Memory extraction (Boss messages only) ─────────────────────────────────
   if (isBoss && histContent.length >= MIN_MEMORY_LEN && !isTrivialMessage(rawPrompt) && (rawPrompt.length > 80 || containsKeyFactPatterns(rawPrompt))) {

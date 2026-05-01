@@ -176,33 +176,44 @@ function pickTopicRelevantIndices(olderHistory, currentMessage, maxKeep = 2, min
 }
 
 // ── Fetch and compress chat history ───────────────────────────────────────────
-async function getHistory(chatId, currentMessage = '') {
-  const rawHistory = await redis.lrange(KEYS.HISTORY(chatId), 0, MAX_HIST_MSGS - 1).catch(() => []);
+// opts.isBoss    → read from unified BOSS_HIST (cross-chat continuity for boss)
+// opts.isPrivate → unused here, kept for call-site clarity
+async function getHistory(chatId, currentMessage = '', { isBoss = false } = {}) {
+  // Boss gets a single unified history spanning DMs + group chats.
+  // Approved users get per-chat history with boss messages stripped out
+  // so they can't interrogate Remy about the boss's private conversations.
+  const histKey = isBoss ? KEYS.BOSS_HIST : KEYS.HISTORY(chatId);
+
+  const rawHistory = await redis.lrange(histKey, 0, MAX_HIST_MSGS - 1).catch(() => []);
   const history = rawHistory.flatMap(e => {
     try { return [JSON.parse(e)]; }
     catch { return []; }
   }).reverse();
 
+  // Approved users: drop any entry tagged as boss-sent
+  const filtered = isBoss ? history : history.filter(h => !h._isBoss);
+
   const FULL_HISTORY_TAIL = 4;
   const TRUNCATE_LEN = 120;
-  const cutoff = history.length - FULL_HISTORY_TAIL;
+  const cutoff = filtered.length - FULL_HISTORY_TAIL;
 
   // Phase 4b: before truncating older messages, look for ones on the same
   // topic as the current turn (cheap keyword overlap) and keep those full.
   // This preserves real context when the Boss loops back to an earlier
   // thread mid-session, without the cost of embedding every history entry.
   const keepFull = cutoff > 0
-    ? pickTopicRelevantIndices(history.slice(0, cutoff), currentMessage, 2, 2)
+    ? pickTopicRelevantIndices(filtered.slice(0, cutoff), currentMessage, 2, 2)
     : new Set();
 
   for (let i = 0; i < cutoff; i++) {
     if (keepFull.has(i)) continue;  // topic-relevant — leave full-length
-    if (history[i].content && history[i].content.length > TRUNCATE_LEN) {
-      history[i] = { ...history[i], content: history[i].content.slice(0, TRUNCATE_LEN) + '...' };
+    if (filtered[i].content && filtered[i].content.length > TRUNCATE_LEN) {
+      filtered[i] = { ...filtered[i], content: filtered[i].content.slice(0, TRUNCATE_LEN) + '...' };
     }
   }
 
-  return history;
+  // Strip internal metadata (_isBoss) before handing to AI — only role+content allowed
+  return filtered.map(({ role, content }) => ({ role, content }));
 }
 
 // ── Build DYNAMIC context block (time + memory + live intel — NOT cached) ────

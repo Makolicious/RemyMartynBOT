@@ -22,6 +22,7 @@ const KEYS = {
   APPROVED:     'approved_users',
   BOSS_GRP:     (chatId) => `boss_group_${chatId}`,
   HISTORY:      (chatId) => `history_${chatId}`,
+  BOSS_HIST:    'history_boss',
   DEDUP:        (msgId) => `dedup_${msgId}`,
   REMINDERS:    'remy_reminders',
   TIMEZONE:     'remy_boss_timezone',
