@@ -12,7 +12,7 @@ const { handleVoice } = require('./handlers/voice');
 const { handleChat } = require('./handlers/chat');
 
 // ── Validate required env vars on cold start ─────────────────────────────────
-const REQUIRED_ENV = ['TELEGRAM_TOKEN', 'MY_TELEGRAM_ID', 'REDIS_URL', 'ZHIPU_API_KEY'];
+const REQUIRED_ENV = ['TELEGRAM_TOKEN', 'MY_TELEGRAM_ID', 'REDIS_URL', 'ANTHROPIC_API_KEY'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length) throw new Error(`Missing required env vars: ${missing.join(', ')}`);
 

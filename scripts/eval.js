@@ -23,13 +23,13 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.local') });
 require('dotenv').config();
 
-// AI SDK logs noisy toolChoice warnings for GLM — suppress unless explicitly enabled
+// Suppress noisy AI SDK toolChoice warnings unless explicitly enabled
 if (process.env.AI_SDK_LOG_WARNINGS !== 'true') {
   globalThis.AI_SDK_LOG_WARNINGS = false;
 }
 
 const { generateText, stepCountIs } = require('ai');
-const { pickModels, FALLBACK_MODEL } = require('../api/lib/models');
+const { pickModels } = require('../api/lib/models');
 const { buildSystemPrompt, buildDynamicContext } = require('../api/middleware/context');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,7 +199,7 @@ async function runCase(c) {
 
   const callTracker = [];
   const tools = (c.role === 'boss' && c.isPrivate) ? buildMockTools(callTracker) : undefined;
-  const isPrimaryAnthropic = FALLBACK_MODEL && model === FALLBACK_MODEL;
+  const isPrimaryAnthropic = true;  // single provider — always Claude
 
   const messages = isPrimaryAnthropic
     ? [
@@ -252,7 +252,7 @@ async function main() {
   }
 
   const verbose = process.env.VERBOSE === '1';
-  const modelName = FALLBACK_MODEL ? 'Anthropic (primary)' : 'GLM (no ANTHROPIC_API_KEY set)';
+  const modelName = process.env.ANTHROPIC_API_KEY ? 'Claude' : '(no ANTHROPIC_API_KEY set)';
   console.log(`\nRemy eval — running ${cases.length} case(s)${filterTags.length ? ` (tags: ${filterTags.join(',')})` : ''}`);
   console.log(`Model: ${modelName}\n`);
 

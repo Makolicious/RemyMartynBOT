@@ -1,6 +1,6 @@
 const { bot, safeSend, BOT_USERNAME, BOSS_ID, BOSS_NAME } = require('../lib/telegram');
 const { redis, KEYS, MAX_HIST_MSGS, MAX_LOG_ENTRIES, MIN_MEMORY_LEN } = require('../lib/redis');
-const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, FALLBACK_MODEL, pickModels } = require('../lib/models');
+const { generateText, CHAT_MODEL, MEMORY_MODEL, pickModels } = require('../lib/models');
 const { stepCountIs } = require('ai');
 const { parseCronNL, parseReminderTime, localTimeToUTC, getBossTimezone } = require('../lib/time');
 const { buildContextMemory, getHistory, buildSystemPrompt, buildDynamicContext } = require('../middleware/context');
@@ -153,7 +153,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
           } catch { return []; }
         }).join('\n');
         const { text: summary } = await generateText({
-          model: FALLBACK_MODEL || CHAT_MODEL,
+          model: CHAT_MODEL,
           prompt: `Summarize today's conversation between ${BOSS_NAME} and Remy. Pull out key topics, decisions, action items, and anything important. Be concise but complete:\n\n${logText}`,
           maxTokens: 800,
         });
@@ -266,8 +266,6 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   const role = isBoss ? 'boss' : 'approved';
   const stableSystem = buildSystemPrompt({ role, isPrivate, senderName });
   const dynamicContext = buildDynamicContext({ timezone, contextMemory, searchResults });
-  // Fallback-friendly combined string (for GLM, which doesn't use cache control)
-  const combinedSystemString = `${stableSystem}\n\n${dynamicContext}`;
 
   // ── Build current message ──────────────────────────────────────────────────
   let currentMessage;
@@ -287,8 +285,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   }
 
   // ── Model routing ──────────────────────────────────────────────────────────
-  const hasWebSearch = !!searchResults;
-  const { primary: primaryModel, primaryName, secondary: secondaryModel, secondaryName } = pickModels(rawPrompt, hasWebSearch);
+  const { primary: primaryModel, primaryName } = pickModels();
 
   console.log(`[AI] Routing \u{2192} ${primaryName} | prompt: ${rawPrompt.length} chars | history: ${history.length}`);
   const aiStartTime = Date.now();
@@ -296,21 +293,18 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
   // ── Build tools (only for boss in private — tool use is boss-only) ─────────
   const tools = (isBoss && isPrivate) ? buildTools(chatId, timezone) : undefined;
 
-  // ── Shape messages: Anthropic gets cache_control on stable system, GLM gets a string system
-  const isPrimaryAnthropic = FALLBACK_MODEL && primaryModel === FALLBACK_MODEL;
-  const primaryMessages = isPrimaryAnthropic
-    ? [
-        {
-          role: 'system',
-          content: stableSystem,
-          providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
-        },
-        { role: 'system', content: dynamicContext },
-        ...history,
-        currentMessage,
-      ]
-    : [...history, currentMessage];
-  const primarySystemParam = isPrimaryAnthropic ? undefined : combinedSystemString;
+  // ── Shape messages: Claude gets cache_control on the stable system block ───────
+  const primaryMessages = [
+    {
+      role: 'system',
+      content: stableSystem,
+      providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+    },
+    { role: 'system', content: dynamicContext },
+    ...history,
+    currentMessage,
+  ];
+  const primarySystemParam = undefined;
 
   // ── Generate response with tool use ────────────────────────────────────────
   let aiResponse;
@@ -375,41 +369,11 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
     console.error(`[AI] ${primaryName} FAILED after ${Date.now() - aiStartTime}ms:`, primaryErr.name, primaryErr.message);
     debugTrace.error = `${primaryName}: ${primaryErr.name} ${primaryErr.message?.slice(0, 120)}`;
 
-    if (secondaryModel) {
-      console.log(`[AI] Falling back to ${secondaryName}...`);
-      const fallbackStart = Date.now();
-      try {
-        const abortController2 = new AbortController();
-        const fallbackTimeout = setTimeout(() => abortController2.abort(), 25000);
-        try {
-          const result = await generateText({
-            model: secondaryModel,
-            system: combinedSystemString,
-            messages: [...history, currentMessage],
-            // No tools on fallback — simpler and more reliable
-            abortSignal: abortController2.signal,
-          });
-          aiResponse = result.text;
-          console.log(`[AI] ${secondaryName} fallback success in ${Date.now() - fallbackStart}ms`);
-          debugTrace.model = secondaryName;
-          debugTrace.usedFallback = true;
-          debugTrace.steps = result.steps?.length || 1;
-          debugTrace.durationMs = Date.now() - aiStartTime;
-        } finally {
-          clearTimeout(fallbackTimeout);
-        }
-      } catch (fallbackErr) {
-        console.error(`[AI] ${secondaryName} ALSO FAILED after ${Date.now() - fallbackStart}ms:`, fallbackErr.name, fallbackErr.message);
-        await bot.sendMessage(chatId, '\u{26A0}\u{FE0F} Both my primary and backup brains are down. Try again in a minute.').catch(() => {});
-        return res.status(200).send('OK');
-      }
-    } else {
-      const msg = primaryErr.name === 'AbortError'
-        ? '\u{23F1}\u{FE0F} Took too long to think that one through. Try asking again or simplify the question.'
-        : `\u{26A0}\u{FE0F} My brain glitched. (${primaryErr.message?.slice(0, 80)})`;
-      await bot.sendMessage(chatId, msg).catch(() => {});
-      return res.status(200).send('OK');
-    }
+    const msg = primaryErr.name === 'AbortError'
+      ? '\u{23F1}\u{FE0F} Took too long to think that one through. Try asking again or simplify the question.'
+      : `\u{26A0}\u{FE0F} My brain glitched. (${primaryErr.message?.slice(0, 80)})`;
+    await bot.sendMessage(chatId, msg).catch(() => {});
+    return res.status(200).send('OK');
   }
 
   // ── Stash debug trace for /debug command (1h TTL) ──
@@ -486,7 +450,7 @@ async function handleChat(message, chatId, cleanPrompt, senderName, isBoss, isPr
         : 'None yet.';
 
       const currentDate = new Date().toISOString().split('T')[0];
-      const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
+      const extractionModel = MEMORY_MODEL;
       const { text: extractionResult } = await generateText({
         model: extractionModel,
         system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,

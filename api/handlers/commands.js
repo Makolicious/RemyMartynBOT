@@ -1,6 +1,6 @@
 const { bot, safeSend, BOSS_NAME, MAIN_MENU_KEYBOARD } = require('../lib/telegram');
 const { redis, KEYS, MAX_LOG_ENTRIES } = require('../lib/redis');
-const { generateText, CHAT_MODEL, UTILITY_MODEL, MEMORY_MODEL, FALLBACK_MODEL } = require('../lib/models');
+const { generateText, CHAT_MODEL, MEMORY_MODEL } = require('../lib/models');
 const { parseReminderTime, parseCronCommand, localTimeToUTC, calculateNextFire, parseDayOfWeek, getBossTimezone } = require('../lib/time');
 const { needsWebSearch } = require('../tools/search');
 const { planGoalTool } = require('../tools/plan');
@@ -126,7 +126,7 @@ async function handleCommand(message, chatId, text, res) {
         } catch { return []; }
       }).join('\n');
       const currentDate = new Date().toISOString().split('T')[0];
-      const extractionModel = MEMORY_MODEL || UTILITY_MODEL;
+      const extractionModel = MEMORY_MODEL;
       const { text: extractionResult } = await generateText({
         model: extractionModel,
         system: `You are a fact extraction assistant. Today's date is ${currentDate}. Extract facts accurately. Return ONLY valid JSON.`,
@@ -243,17 +243,6 @@ async function handleCommand(message, chatId, text, res) {
     return res.status(200).send('OK');
   }
 
-  // /backfill
-  if (text === '/backfill') {
-    await bot.sendMessage(chatId, '\u{23F3} Generating embeddings for existing memories...');
-    const result = await memory.backfillEmbeddings();
-    await bot.sendMessage(chatId,
-      `\u{2705} Embedding backfill complete:\n\u{2022} Embedded: *${result.embedded}*\n\u{2022} Failed: *${result.failed}*\n\u{2022} Already had embeddings: *${result.skipped}*`,
-      { parse_mode: 'Markdown' }
-    );
-    return res.status(200).send('OK');
-  }
-
   // /memdecay
   if (text === '/memdecay') {
     await bot.sendMessage(chatId, '\u{23F3} Applying time decay...');
@@ -306,7 +295,7 @@ async function handleCommand(message, chatId, text, res) {
         } catch { return []; }
       }).join('\n');
       const { text: summary } = await generateText({
-        model: FALLBACK_MODEL || CHAT_MODEL,
+        model: CHAT_MODEL,
         prompt: `Summarize these conversation exchanges concisely. Key topics, decisions, and important points only:\n\n${logText}`,
       });
       await safeSend(chatId, `\u{1F4CB} *Summary (last ${entries.length} exchanges):*\n\n${summary}`);
@@ -623,8 +612,7 @@ async function handleCommand(message, chatId, text, res) {
       `\`/memstats\` \u{2014} view memory statistics\n` +
       `\`/memdecay\` \u{2014} apply time decay\n` +
       `\`/memexport\` \u{2014} export as markdown\n` +
-      `\`/rebuildmemory\` \u{2014} rebuild memory from log\n` +
-      `\`/backfill\` \u{2014} generate embeddings for existing memories\n\n` +
+      `\`/rebuildmemory\` \u{2014} rebuild memory from log\n\n` +
       `*Agent*\n` +
       `\`/agent plan <goal>\` \u{2014} generate structured plan\n` +
       `\`/agent help\` \u{2014} agent commands\n\n` +

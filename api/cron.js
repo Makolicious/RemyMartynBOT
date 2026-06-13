@@ -1,17 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const Redis = require('ioredis');
-const { zai } = require('zhipu-ai-provider');
-const { generateText } = require('ai');
-
-const CHAT_MODEL = zai('glm-4-plus');
-
-let FALLBACK_MODEL = null;
-if (process.env.ANTHROPIC_API_KEY) {
-  const { anthropic } = require('@ai-sdk/anthropic');
-  const cronModel = process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6';
-  FALLBACK_MODEL = anthropic(cronModel);
-  console.log(`[CRON INIT] Anthropic model: ${cronModel}`);
-}
+const { generateText, CHAT_MODEL } = require('./lib/models');
 
 const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
@@ -189,7 +178,7 @@ async function countPendingReminders() {
   } catch { return { reminders: 0, cronJobs: 0 }; }
 }
 
-// Execute an AI task job — Sonnet for quality, Serper for live data
+// Execute an AI task job — Claude for quality, Serper for live data
 async function executeAiTask(job) {
   const bossName = process.env.BOSS_NAME || 'Mako';
   const tzOffset = parseInt(process.env.TZ_OFFSET) || -4; // EDT default
@@ -242,7 +231,6 @@ async function executeAiTask(job) {
     }
   }
 
-  // Try Anthropic first, fall back to GLM if it fails
   const systemMsg = `You are Remy — ${bossName}'s personal AI agent. Sharp, direct, loyal. Current time: ${localTime}. ${bossName} is based in South Florida (Miami / Hialeah). "Local" always means Miami-Dade / South Florida.${briefingContext}${searchSection}`;
   const promptMsg = isBriefing
     ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live data provided above. Never fabricate information.\n\nFormat this as a MORNING BRIEFING:\n- Start with a greeting and the weather (temperature, conditions, heat index if hot — relevant for job sites)\n- Mention pending reminders/tasks count if any\n- Then news sections with ## headers and relevant emojis\n- Use --- separators between sections\n- 3+ bullet points per category\n- End with a short motivational line\n- Keep it punchy and scannable`
@@ -250,31 +238,20 @@ async function executeAiTask(job) {
       ? `Execute this scheduled task for ${bossName}: ${job.message}\n\nIMPORTANT: Base your response ONLY on the live search results provided above. If no search results were provided, say so honestly — never fabricate or hallucinate information.\n\nFormatting rules:\n- Start with a bold title line including the date and time\n- Use ## headers with relevant emojis for each category (e.g. ## 🏛️ Politics, ## 💻 Tech, ## 🌍 International, ## 💰 Business)\n- Use --- separators between sections\n- 3+ bullet points per category\n- Keep it punchy and scannable`
       : `Execute this scheduled task for ${bossName}: ${job.message}\n\nKeep it short and direct. No filler.`;
 
-  // Try Anthropic first (better quality), fall back to GLM on timeout/error
-  console.log(`[CRON] AI task | primary: ${FALLBACK_MODEL ? 'Anthropic' : 'GLM'} | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
+  console.log(`[CRON] AI task | model: Claude | search: ${needsSearch} | briefing: ${isBriefing} | hasResults: ${!!searchSection}`);
 
-  let text;
-  try {
-    const abortPrimary = AbortSignal.timeout(25000);
-    const result = await generateText({
-      model: FALLBACK_MODEL || CHAT_MODEL,
-      system: systemMsg,
-      prompt: promptMsg,
-      maxTokens: 2000,
-      abortSignal: abortPrimary,
-    });
-    text = result.text;
-  } catch (err) {
-    if (!FALLBACK_MODEL) throw err;  // no fallback available
-    console.warn(`[CRON] Anthropic failed (${err.name}: ${err.message?.slice(0, 80)}), falling back to GLM`);
-    const fallback = await generateText({
-      model: CHAT_MODEL,
-      system: systemMsg,
-      prompt: promptMsg,
-      maxTokens: 2000,
-    });
-    text = fallback.text;
-  }
+  // 45s ceiling: large multi-category briefings (e.g. the presidential debrief)
+  // routinely take ~37s. The old 25s ceiling aborted them mid-flight. Searches
+  // (run above, ~5s in parallel) + 45s + Telegram send stays under the 60s Vercel
+  // maxDuration. A failure here propagates to the job handler, which reports the
+  // real error rather than masking it behind a fallback model.
+  const { text } = await generateText({
+    model: CHAT_MODEL,
+    system: systemMsg,
+    prompt: promptMsg,
+    maxTokens: 2000,
+    abortSignal: AbortSignal.timeout(45000),
+  });
 
   return text;
 }

@@ -1,35 +1,26 @@
-const { zai } = require('zhipu-ai-provider');
+const { anthropic } = require('@ai-sdk/anthropic');
 const { generateText } = require('ai');
 
-const CHAT_MODEL    = zai('glm-4-plus');
-const UTILITY_MODEL = zai('glm-5');
+// ── Models — Claude only ──────────────────────────────────────────────────────
+// ANTHROPIC_API_KEY is required. CHAT_MODEL handles interactive chat and any
+// quality-sensitive task; MEMORY_MODEL is the fast/cheap model for utility work
+// (fact extraction, relevance gating, inline answers).
+const CHAT_MODEL   = anthropic(process.env.ANTHROPIC_CHAT_MODEL || 'claude-opus-4-8');
+const MEMORY_MODEL = anthropic(process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5');
 
-let FALLBACK_MODEL = null;
-let MEMORY_MODEL = null;
-if (process.env.ANTHROPIC_API_KEY) {
-  const { anthropic } = require('@ai-sdk/anthropic');
-  const chatModel = process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6';
-  const fastModel = process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5';
-  FALLBACK_MODEL = anthropic(chatModel);
-  MEMORY_MODEL = anthropic(fastModel);
-  console.log(`[INIT] Anthropic models — chat: ${chatModel}, memory: ${fastModel}`);
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('[INIT] ANTHROPIC_API_KEY is not set — model calls will fail.');
+} else {
+  console.log(`[INIT] Claude models — chat: ${process.env.ANTHROPIC_CHAT_MODEL || 'claude-opus-4-8'}, fast: ${process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5'}`);
 }
 
-// ── Model routing — Anthropic is primary for all interactive chat ─────────────
-function pickModels(prompt, hasWebSearch) {
-  if (FALLBACK_MODEL) {
-    // Anthropic is always primary for interactive chat — reliable tool use
-    return {
-      primary:       FALLBACK_MODEL,
-      primaryName:   'Anthropic',
-      secondary:     CHAT_MODEL,
-      secondaryName: 'GLM-4-Plus',
-    };
-  }
-  // No Anthropic key — GLM only
+// ── Model routing ──────────────────────────────────────────────────────────────
+// Single provider now, so there's no secondary fallback. Kept as a function so
+// callers (chat.js, eval.js) keep a stable shape.
+function pickModels() {
   return {
     primary:       CHAT_MODEL,
-    primaryName:   'GLM-4-Plus',
+    primaryName:   'Claude',
     secondary:     null,
     secondaryName: null,
   };
@@ -51,8 +42,6 @@ function analyzeQueryComplexity(query) {
 module.exports = {
   generateText,
   CHAT_MODEL,
-  UTILITY_MODEL,
-  FALLBACK_MODEL,
   MEMORY_MODEL,
   pickModels,
   analyzeQueryComplexity,

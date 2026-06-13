@@ -1,12 +1,11 @@
 /**
  * Self-Organizing Memory System
- * A lean, unconventional AI memory framework with importance decay and auto-organization
- * Now with vector embeddings for semantic search
+ * A lean, unconventional AI memory framework with importance decay and auto-organization.
+ * Retrieval, relatedness, and dedup run on keyword + local lexical similarity —
+ * Anthropic-only, no external embeddings provider.
  */
 
 const Redis = require('ioredis');
-const { embed } = require('ai');
-const { zai } = require('zhipu-ai-provider');
 const {
   CATEGORIES,
   PERMANENT_CATEGORIES,
@@ -14,9 +13,6 @@ const {
   normalizeCategory,
   validateMemory
 } = require('./schema');
-
-// ── Embedding Model ──────────────────────────────────────────────────────
-const EMBEDDING_MODEL = zai.textEmbeddingModel('embedding-3', { dimensions: 256 });
 
 // ── Redis Keys ───────────────────────────────────────────────────────────
 const KEYS = {
@@ -26,7 +22,6 @@ const KEYS = {
   ACCESSED: 'remy_mem_accessed_recent', // ZSET: timestamp -> memory_id (hot cache)
   STATS: 'remy_mem_stats',            // HASH: system stats
   LAST_DECAY: 'remy_mem_last_decay',  // STRING: timestamp of last decay run
-  EMBEDDINGS: 'remy_mem_embeddings'   // HASH: memory_id -> JSON embedding vector
 };
 
 // ── Lazy Redis Connection ──────────────────────────────────────────────────
@@ -44,115 +39,72 @@ function getRedis() {
   return redis;
 }
 
-// ── Embedding Utilities ──────────────────────────────────────────────────
+// ── Lexical similarity (Anthropic-only — no external embeddings) ────────────
+// Semantic vector search needed a third-party embeddings provider, which we no
+// longer use. Retrieval falls back to keyword match; relatedness and dedup run
+// on local token-overlap (Jaccard) similarity — lower fidelity than vectors,
+// but zero external dependencies.
 
-/**
- * Generate a 256-dim embedding vector for text using Zhipu embedding-3
- */
-async function generateEmbedding(text) {
-  try {
-    const { embedding } = await embed({
-      model: EMBEDDING_MODEL,
-      value: text.slice(0, 500), // cap input length
-    });
-    return embedding; // number[]
-  } catch (err) {
-    console.error('[MEMORY] Embedding generation failed:', err.message);
-    return null;
-  }
+const STOPWORDS = new Set(['the','a','an','and','or','but','is','are','was','were','to','of','in','on','for','with','at','by','from','as','it','this','that','these','those','his','her','my','our','your','their','i','he','she','they','we','you','be','been','has','have','had','do','does','did','will','would','can','could']);
+
+function tokenize(text) {
+  return new Set(
+    String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter(w => w.length > 2 && !STOPWORDS.has(w))
+  );
 }
 
 /**
- * Cosine similarity between two vectors
+ * Jaccard token-overlap similarity in [0,1]. Accepts strings or pre-tokenized Sets.
  */
-function cosineSimilarity(a, b) {
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB) || 1);
+function textSimilarity(a, b) {
+  const sa = a instanceof Set ? a : tokenize(a);
+  const sb = b instanceof Set ? b : tokenize(b);
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter++;
+  return inter / (sa.size + sb.size - inter);
 }
 
 /**
- * Semantic search — embed the query, cosine-sim against all stored embeddings,
- * return top-k memories sorted by similarity
+ * Semantic search — kept for API compatibility; now a keyword search.
+ * Callers (context.js, memory-tool.js, chat.js) further filter results through
+ * the Claude/Haiku relevance gate, so recall stays reasonable.
  */
 async function semanticSearch(queryText, limit = 10) {
-  const db = getRedis();
-
-  // Embed the query
-  const queryVec = await generateEmbedding(queryText);
-  if (!queryVec) {
-    // Fallback to keyword search if embedding fails
-    return searchMemories(queryText, limit);
-  }
-
-  // Fetch all stored embeddings in one call
-  const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
-  if (!allEmbeddings || Object.keys(allEmbeddings).length === 0) {
-    return searchMemories(queryText, limit);
-  }
-
-  // Compute similarity for each memory
-  const scored = [];
-  for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
-    try {
-      const vec = JSON.parse(vecJson);
-      if (!Array.isArray(vec) || vec.length !== queryVec.length) continue;
-      const sim = cosineSimilarity(queryVec, vec);
-      scored.push({ id: memId, similarity: sim });
-    } catch { /* skip corrupted entries */ }
-  }
-
-  // Sort by similarity descending, take top-k
-  scored.sort((a, b) => b.similarity - a.similarity);
-  const topIds = scored.slice(0, limit);
-
-  // Fetch full memory entries (no boost on search)
-  const results = [];
-  for (const { id, similarity } of topIds) {
-    if (similarity < 0.3) continue; // skip very low relevance
-    const mem = await getMemory(id, false);
-    if (mem) results.push({ ...mem, relevance: similarity });
-  }
-
-  return results;
+  return searchMemories(queryText, limit);
 }
 
 /**
  * Build the related_ids graph for a newly-added memory.
- * Finds up to N semantically-similar memories above a similarity threshold
- * and writes bidirectional links. Bounded so it can't explode.
+ * Finds up to N lexically-similar memories above a similarity threshold and
+ * writes bidirectional links. Bounded so it can't explode.
  *
- * Called from addMemory after the new embedding is persisted.
+ * Called fire-and-forget from addMemory.
  */
-async function linkRelatedMemories(newId, newVec, {
+async function linkRelatedMemories(newId, newText, {
   topK = 5,
-  similarityThreshold = 0.55,
+  similarityThreshold = 0.25,
   maxRelatedPerMemory = 10,
+  scanLimit = 200,
 } = {}) {
-  if (!newVec || !Array.isArray(newVec) || newVec.length === 0) return [];
+  const newTokens = tokenize(newText);
+  if (newTokens.size === 0) return [];
   const db = getRedis();
 
   try {
-    const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
-    if (!allEmbeddings) return [];
+    const ids = await db.zrevrange(KEYS.ALL, 0, scanLimit - 1);
 
     const scored = [];
-    for (const [id, vecJson] of Object.entries(allEmbeddings)) {
+    for (const id of ids) {
       if (id === newId) continue;  // skip self
-      try {
-        const vec = JSON.parse(vecJson);
-        if (!Array.isArray(vec) || vec.length !== newVec.length) continue;
-        const sim = cosineSimilarity(newVec, vec);
-        if (sim >= similarityThreshold) scored.push({ id, similarity: sim });
-      } catch { /* skip corrupt */ }
+      const mem = await getMemory(id, false);
+      if (!mem) continue;
+      const sim = textSimilarity(newTokens, `[${mem.category}] ${mem.content}`);
+      if (sim >= similarityThreshold) scored.push({ id, similarity: sim });
     }
     scored.sort((a, b) => b.similarity - a.similarity);
-    const picked = scored.slice(0, topK);
-    const relatedIds = picked.map(p => p.id);
+    const relatedIds = scored.slice(0, topK).map(p => p.id);
     if (relatedIds.length === 0) return [];
 
     // Write forward links on the new memory
@@ -185,38 +137,10 @@ function safeParseArr(s) {
   try { const x = JSON.parse(s); return Array.isArray(x) ? x : []; } catch { return []; }
 }
 
-/**
- * Backfill embeddings for all existing memories that don't have one yet
- */
-async function backfillEmbeddings() {
-  const db = getRedis();
-  const allIds = await db.zrevrange(KEYS.ALL, 0, -1);
-  const existingEmbeddings = await db.hkeys(KEYS.EMBEDDINGS);
-  const existingSet = new Set(existingEmbeddings);
-
-  let embedded = 0, failed = 0;
-  for (const id of allIds) {
-    if (existingSet.has(id)) continue;
-    const mem = await getMemory(id, false);
-    if (!mem) continue;
-
-    const vec = await generateEmbedding(`[${mem.category}] ${mem.content}`);
-    if (vec) {
-      await db.hset(KEYS.EMBEDDINGS, id, JSON.stringify(vec));
-      embedded++;
-    } else {
-      failed++;
-    }
-  }
-
-  console.log(`[MEMORY] Backfill complete: ${embedded} embedded, ${failed} failed, ${existingSet.size} already had embeddings`);
-  return { embedded, failed, skipped: existingSet.size };
-}
-
 // ── Core Operations ───────────────────────────────────────────────────────
 
 /**
- * Add a new memory entry (now also generates + stores an embedding)
+ * Add a new memory entry (also links related memories via lexical similarity)
  */
 async function addMemory(content, category, confidence = 80, pinned = null) {
   const db = getRedis();
@@ -246,19 +170,10 @@ async function addMemory(content, category, confidence = 80, pinned = null) {
   // Add to recent access (as creation)
   await db.zadd(KEYS.ACCESSED, Date.now(), memory.id);
 
-  // Generate and store embedding, then build related_ids graph
-  try {
-    const vec = await generateEmbedding(`[${memory.category}] ${memory.content}`);
-    if (vec) {
-      await db.hset(KEYS.EMBEDDINGS, memory.id, JSON.stringify(vec));
-      // Fire-and-forget graph linking — doesn't block memory creation
-      linkRelatedMemories(memory.id, vec).catch(err =>
-        console.warn('[MEMORY] linkRelated failed:', err.message)
-      );
-    }
-  } catch (err) {
-    console.error('[MEMORY] Embedding failed:', err.message);
-  }
+  // Build related_ids graph via lexical similarity (fire-and-forget — doesn't block)
+  linkRelatedMemories(memory.id, `[${memory.category}] ${memory.content}`).catch(err =>
+    console.warn('[MEMORY] linkRelated failed:', err.message)
+  );
 
   // Update stats
   await incrementStat('total_memories');
@@ -462,12 +377,11 @@ async function deleteMemory(id) {
     return false;
   }
 
-  // Remove from all indexes (including embedding)
+  // Remove from all indexes
   await db.del(KEYS.ENTRY(id));
   await db.zrem(KEYS.ALL, id);
   await db.srem(KEYS.CATEGORY(mem.category), id);
   await db.zrem(KEYS.ACCESSED, id);
-  await db.hdel(KEYS.EMBEDDINGS, id);
 
   await incrementStat('deleted_memories');
 
@@ -605,39 +519,34 @@ async function exportAsMarkdown() {
 }
 
 /**
- * Check if a fact is a semantic duplicate of an existing memory.
- * Returns the matching memory if similarity > threshold, null otherwise.
+ * Check if a fact is a near-duplicate of an existing memory in the same category,
+ * using lexical (token-overlap) similarity. Returns the matching memory if
+ * similarity >= threshold, null otherwise.
  */
-async function findDuplicate(content, category, threshold = 0.85) {
+async function findDuplicate(content, category, threshold = 0.6) {
   const db = getRedis();
+  const newTokens = tokenize(`[${category}] ${content}`);
+  if (newTokens.size === 0) return null;
 
-  // Generate embedding for the new fact
-  const newVec = await generateEmbedding(`[${category}] ${content}`);
-  if (!newVec) return null; // Can't check without embedding, allow it through
+  // Scan memories in the same category (where duplicates would live)
+  const normalized = normalizeCategory(category);
+  const ids = await db.smembers(KEYS.CATEGORY(normalized));
+  if (!ids || ids.length === 0) return null;
 
-  // Get all embeddings
-  const allEmbeddings = await db.hgetall(KEYS.EMBEDDINGS);
-  if (!allEmbeddings || Object.keys(allEmbeddings).length === 0) return null;
-
-  // Find best match
   let bestMatch = null;
   let bestSim = 0;
-
-  for (const [memId, vecJson] of Object.entries(allEmbeddings)) {
-    try {
-      const vec = JSON.parse(vecJson);
-      if (!Array.isArray(vec) || vec.length !== newVec.length) continue;
-      const sim = cosineSimilarity(newVec, vec);
-      if (sim > bestSim) {
-        bestSim = sim;
-        bestMatch = memId;
-      }
-    } catch { /* skip corrupted */ }
+  for (const id of ids) {
+    const mem = await getMemory(id, false);
+    if (!mem) continue;
+    const sim = textSimilarity(newTokens, `[${mem.category}] ${mem.content}`);
+    if (sim > bestSim) {
+      bestSim = sim;
+      bestMatch = mem;
+    }
   }
 
   if (bestSim >= threshold && bestMatch) {
-    const mem = await getMemory(bestMatch, false);
-    if (mem) return { ...mem, similarity: bestSim };
+    return { ...bestMatch, similarity: bestSim };
   }
 
   return null;
@@ -671,7 +580,6 @@ module.exports = {
   getMemoriesByCategory,
   searchMemories,
   semanticSearch,
-  backfillEmbeddings,
   linkRelatedMemories,
   updateMemory,
   deleteMemory,

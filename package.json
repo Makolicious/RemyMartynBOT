@@ -17,8 +17,7 @@
     "@ai-sdk/anthropic": "^2.0.71",
     "ai": "^5.0.138",
     "ioredis": "^5.3.2",
-    "node-telegram-bot-api": "^0.63.0",
-    "zhipu-ai-provider": "^0.2.2"
+    "node-telegram-bot-api": "^0.63.0"
   },
   "devDependencies": {
     "dotenv": "^17.3.1"

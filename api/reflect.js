@@ -12,17 +12,7 @@
 // window so duplicate calls in the same day don't stack reflections.
 
 const Redis = require('ioredis');
-const { zai } = require('zhipu-ai-provider');
-const { generateText } = require('ai');
-
-let FALLBACK_MODEL = null;
-let MEMORY_MODEL = null;
-if (process.env.ANTHROPIC_API_KEY) {
-  const { anthropic } = require('@ai-sdk/anthropic');
-  FALLBACK_MODEL = anthropic(process.env.ANTHROPIC_CHAT_MODEL || 'claude-sonnet-4-6');
-  MEMORY_MODEL = anthropic(process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5');
-}
-const GLM_MODEL = zai('glm-4-plus');
+const { generateText, CHAT_MODEL, MEMORY_MODEL } = require('./lib/models');
 
 const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
@@ -50,7 +40,7 @@ async function generateReflection(entries, today) {
 
   if (!condensed) return null;
 
-  const model = MEMORY_MODEL || FALLBACK_MODEL || GLM_MODEL;
+  const model = MEMORY_MODEL || CHAT_MODEL;
   const { text } = await generateText({
     model,
     system: `You are Remy, summarizing the past 24 hours of your own conversations with the Boss. Output ONLY valid JSON — no prose, no markdown, no commentary.`,

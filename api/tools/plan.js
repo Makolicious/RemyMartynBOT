@@ -1,5 +1,5 @@
 const { z } = require('zod');
-const { generateText, CHAT_MODEL, FALLBACK_MODEL } = require('../lib/models');
+const { generateText, CHAT_MODEL } = require('../lib/models');
 const memory = require('../memory');
 const { redis, KEYS } = require('../lib/redis');
 
@@ -32,10 +32,9 @@ const planGoalTool = {
       const currentDate = new Date().toISOString().split('T')[0];
 
       const result = await generateText({
-        model: FALLBACK_MODEL || CHAT_MODEL,
+        model: CHAT_MODEL,
         system: PLANNER_SYSTEM,
         prompt: `Goal: ${goal}\n\nContext:\n- Current Date: ${currentDate}\n- Timezone: ${timezone || 'UTC'}\n\nMemory:\n${memoryExport || 'No memory available yet.'}\n\nGenerate a plan. Return ONLY valid JSON with title, steps array (each with id, action, estimatedTime), and optional notes. 3-7 steps max.`,
-        temperature: 0.7,
         maxTokens: 800,
       });
 
